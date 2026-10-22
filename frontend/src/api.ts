@@ -1,0 +1,86 @@
+// 백엔드 API 호출. 금액은 서버에서 문자열(Decimal)로 오므로 화면에서 숫자로 바꾼다.
+
+export interface Ticker {
+  market: string
+  price: string
+  change_rate: string
+  change_price: string
+  high: string
+  low: string
+  volume_24h: string
+  value_24h: string
+  timestamp: string
+}
+
+export interface Candle {
+  market: string
+  time_kst: string
+  open: string
+  high: string
+  low: string
+  close: string
+  volume: string
+}
+
+export interface Market {
+  code: string
+  korean_name: string
+  english_name: string
+}
+
+export interface DcaConfig {
+  enabled: boolean
+  mode: 'paper' | 'live'
+  exchange: 'bithumb' | 'upbit'
+  market: string
+  weekday: number
+  run_time: string
+  krw_amount: string
+  max_total_krw: string | null
+}
+
+export interface DcaRun {
+  at: string
+  market: string
+  krw_amount: string
+  mode: 'paper' | 'live'
+  order_id: string | null
+  price: string | null
+  ok: boolean
+  message: string
+}
+
+export interface DcaView {
+  config: DcaConfig
+  summary: string
+  next_run: string | null
+  total_spent: string
+  runs: DcaRun[]
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    const detail = body?.detail
+    const message = Array.isArray(detail)
+      ? detail.map((d: { msg: string }) => d.msg.replace(/^Value error, /, '')).join(' ')
+      : detail ?? `요청 실패 (${res.status})`
+    throw new Error(message)
+  }
+  return res.json()
+}
+
+export const api = {
+  markets: () => request<Market[]>('/api/markets'),
+  tickers: (markets: string[]) =>
+    request<Ticker[]>(`/api/tickers?markets=${encodeURIComponent(markets.join(','))}`),
+  candles: (market: string, interval: string) =>
+    request<Candle[]>(`/api/candles?market=${market}&interval=${interval}&count=200`),
+  getDca: () => request<DcaView>('/api/strategies/dca'),
+  putDca: (cfg: DcaConfig) =>
+    request<DcaView>('/api/strategies/dca', { method: 'PUT', body: JSON.stringify(cfg) }),
+}
