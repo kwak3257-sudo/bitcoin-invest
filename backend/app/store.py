@@ -5,14 +5,27 @@ API 서버와 매매 엔진이 같은 파일을 쓰므로, 읽고 고쳐 쓰는 
 
 from __future__ import annotations
 
-import fcntl
 import os
+import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from .strategies.dca import DcaState
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock(f) -> None:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)  # 잡힐 때까지 기다린다(약 10초마다 재시도)
+
+else:
+    import fcntl
+
+    def _lock(f) -> None:
+        fcntl.flock(f, fcntl.LOCK_EX)
 
 
 class DcaStore:
@@ -37,7 +50,7 @@ class DcaStore:
         """잠금을 잡고 상태를 읽어 넘겨준 뒤, 블록이 끝나면 저장한다."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path.with_suffix(".lock"), "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            _lock(lock)
             state = self.load()
             yield state
             self._save(state)

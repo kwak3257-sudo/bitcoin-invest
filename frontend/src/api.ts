@@ -37,12 +37,19 @@ export interface DcaConfig {
   run_time: string
   krw_amount: string
   max_total_krw: string | null
+  fee_rate: string
+  take_profit_pct: string | null
+  take_profit_sell_ratio: string
+  take_profit_cooldown_hours: number
 }
 
 export interface DcaRun {
   at: string
   market: string
+  side: 'buy' | 'sell'
   krw_amount: string
+  volume: string
+  fee_krw: string
   mode: 'paper' | 'live'
   order_id: string | null
   price: string | null
@@ -54,8 +61,30 @@ export interface DcaView {
   config: DcaConfig
   summary: string
   next_run: string | null
+  take_profit_price: string | null
   total_spent: string
   runs: DcaRun[]
+}
+
+export interface Analysis {
+  market: string
+  mode: 'paper' | 'live'
+  fee_rate: string
+  price: string | null
+  volume: string
+  avg_cost: string | null
+  invested_krw: string
+  cost_krw: string
+  value_krw: string
+  realized_pnl_krw: string
+  unrealized_pnl_krw: string
+  total_pnl_krw: string
+  return_pct: string
+  fees_krw: string
+  buy_count: number
+  sell_count: number
+  curve: { at: string; invested: string; pnl: string }[]
+  trades: DcaRun[]
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -80,6 +109,7 @@ export const api = {
     request<Ticker[]>(`/api/tickers?markets=${encodeURIComponent(markets.join(','))}`),
   candles: (market: string, interval: string) =>
     request<Candle[]>(`/api/candles?market=${market}&interval=${interval}&count=200`),
+  analysis: () => request<Analysis>('/api/analysis'),
   getDca: () => request<DcaView>('/api/strategies/dca'),
   putDca: (cfg: DcaConfig) =>
     request<DcaView>('/api/strategies/dca', { method: 'PUT', body: JSON.stringify(cfg) }),
