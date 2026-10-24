@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import config, notify
+from .confirm import ConfirmGate
 from .backtest import BacktestCosts, optimize, run_backtest
 from .exchanges.base import ExchangeError
 from .exchanges.bithumb import CANDLE_PATHS, BithumbExchange
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     app.state.exchange = BithumbExchange(config.BITHUMB_ACCESS_KEY, config.BITHUMB_SECRET_KEY)
     app.state.dca_store = DcaStore(config.DATA_DIR / "dca.json")
     app.state.trader_store = TraderStore(config.DATA_DIR / "trader.json")
+    app.state.confirm = ConfirmGate()
     yield
     await app.state.exchange.close()
 
@@ -74,6 +76,11 @@ async def candles(market: str = "KRW-BTC", interval: str = "1d", count: int = Qu
     return await app.state.exchange.candles(market, interval, count)
 
 
+def _needs_code(new, old) -> bool:
+    """실거래로 켜져 있는 상태에서 설정이 바뀌면 인증이 필요하다. 끄는 것은 언제나 바로 된다."""
+    return new.mode == "live" and new.enabled and new != old
+
+
 def _dca_view(state) -> dict:
     cfg = state.config
     return {
@@ -92,11 +99,16 @@ def get_dca():
 
 
 @app.put("/api/strategies/dca")
-def put_dca(cfg: WeeklyDcaConfig):
+async def put_dca(cfg: WeeklyDcaConfig, code: str | None = None):
     if cfg.mode == "live" and not (config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY):
         raise HTTPException(400, "실거래 모드는 빗썸 API 키를 등록한 뒤에 켤 수 있습니다.")
+    if _needs_code(cfg, app.state.dca_store.load().config):
+        await app.state.confirm.require("dca", f"정기 매수 실거래 설정 저장 ({cfg.describe()})",
+                                        cfg.model_dump_json(), code)
     with app.state.dca_store.edit() as state:
         state.config = cfg
+    await notify.send(f"정기 매수 설정이 저장됐습니다: {'켜짐' if cfg.enabled else '꺼짐'}, "
+                      f"{'실거래' if cfg.mode == 'live' else '모의투자'}, {cfg.describe()}")
     return _dca_view(state)
 
 
@@ -243,15 +255,22 @@ async def get_trader():
 
 
 @app.put("/api/strategies/trader")
-async def put_trader(cfg: TraderConfig):
+async def put_trader(cfg: TraderConfig, code: str | None = None):
     if cfg.mode == "live" and not (config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY):
         raise HTTPException(400, "실거래 모드는 빗썸 API 키를 등록한 뒤에 켤 수 있습니다.")
+    if _needs_code(cfg, app.state.trader_store.load().config):
+        await app.state.confirm.require(
+            "trader", f"단기 매매 실거래 설정 저장 ({cfg.market}, 운용 금액 {cfg.budget_krw:,.0f}원)",
+            cfg.model_dump_json(), code,
+        )
     with app.state.trader_store.edit() as state:
         if state.position is not None and (cfg.market != state.config.market or cfg.mode != state.config.mode):
             raise HTTPException(400, "보유 중에는 코인이나 모드를 바꿀 수 없습니다. 긴급 정지로 먼저 정리하세요.")
         if cfg.enabled and not state.config.enabled:
             state.halted_until = state.halt_reason = None
         state.config = cfg
+    await notify.send(f"단기 매매 설정이 저장됐습니다: {'켜짐' if cfg.enabled else '꺼짐'}, "
+                      f"{'실거래' if cfg.mode == 'live' else '모의투자'}, {cfg.market}, 운용 금액 {cfg.budget_krw:,.0f}원")
     return await _trader_view(state)
 
 

@@ -210,6 +210,15 @@ export interface OptimizeResult {
   picks: { params: BacktestParams; train: OptimizeSummary; test: OptimizeSummary }[]
 }
 
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -221,9 +230,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const message = Array.isArray(detail)
       ? detail.map((d: { msg: string }) => d.msg.replace(/^Value error, /, '')).join(' ')
       : detail ?? `요청 실패 (${res.status})`
-    throw new Error(message)
+    throw new ApiError(message, res.status)
   }
   return res.json()
+}
+
+const codeQuery = (code?: string) => (code ? `?code=${encodeURIComponent(code)}` : '')
+
+// 실거래 설정은 텔레그램 인증번호가 필요하다(428). 번호를 물어 다시 보낸다
+export async function withTelegramCode<T>(send: (code?: string) => Promise<T>): Promise<T> {
+  let ask: string
+  try {
+    return await send()
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 428) throw e
+    ask = e.message
+  }
+  for (;;) {
+    const code = window.prompt(`${ask}\n(텔레그램에서 방금 받은 번호)`)
+    if (!code) throw new Error('인증을 취소했습니다. 설정은 저장되지 않았어요.')
+    try {
+      return await send(code)
+    } catch (e) {
+      // 번호가 틀리면 다시 묻는다. 너무 많이 틀리거나 다른 오류면 그대로 알린다
+      if (!(e instanceof ApiError) || e.status !== 403 || !e.message.includes('맞지 않')) throw e
+      ask = e.message
+    }
+  }
 }
 
 export const api = {
@@ -238,10 +271,10 @@ export const api = {
     request<OptimizeResult>('/api/backtest/optimize', { method: 'POST', body: JSON.stringify(req) }),
   analysis: () => request<Analysis>('/api/analysis'),
   getTrader: () => request<TraderView>('/api/strategies/trader'),
-  putTrader: (cfg: TraderConfig) =>
-    request<TraderView>('/api/strategies/trader', { method: 'PUT', body: JSON.stringify(cfg) }),
+  putTrader: (cfg: TraderConfig, code?: string) =>
+    request<TraderView>(`/api/strategies/trader${codeQuery(code)}`, { method: 'PUT', body: JSON.stringify(cfg) }),
   stopTrader: () => request<TraderView>('/api/strategies/trader/stop', { method: 'POST' }),
   getDca: () => request<DcaView>('/api/strategies/dca'),
-  putDca: (cfg: DcaConfig) =>
-    request<DcaView>('/api/strategies/dca', { method: 'PUT', body: JSON.stringify(cfg) }),
+  putDca: (cfg: DcaConfig, code?: string) =>
+    request<DcaView>(`/api/strategies/dca${codeQuery(code)}`, { method: 'PUT', body: JSON.stringify(cfg) }),
 }

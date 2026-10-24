@@ -100,3 +100,40 @@ def test_trader_settings_and_emergency_stop(tmp_path, monkeypatch):
 
         v = client.post("/api/strategies/trader/stop").json()
         assert v["stop_requested"] is True  # 보유 중이면 엔진이 팔고 끈다
+
+
+def test_live_settings_need_telegram_code(tmp_path, monkeypatch):
+    from app import notify
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "BITHUMB_ACCESS_KEY", "a")
+    monkeypatch.setattr(config, "BITHUMB_SECRET_KEY", "b")
+    sent = []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    monkeypatch.setattr(notify, "send", fake_send)
+    from app.main import app
+
+    with TestClient(app) as client:
+        cfg = {**client.get("/api/strategies/dca").json()["config"], "enabled": True, "mode": "live"}
+
+        monkeypatch.setattr(notify, "enabled", lambda: False)
+        assert client.put("/api/strategies/dca", json=cfg).status_code == 400  # 텔레그램 없으면 실거래 불가
+
+        monkeypatch.setattr(notify, "enabled", lambda: True)
+        r = client.put("/api/strategies/dca", json=cfg)
+        assert r.status_code == 428
+        code = sent[-1].split()[2]
+        assert len(code) == 6 and code.isdigit()
+
+        wrong = "000000" if code != "000000" else "111111"
+        assert client.put(f"/api/strategies/dca?code={wrong}", json=cfg).status_code == 403
+        # 받은 번호로 다른 설정을 저장하려 하면 새 번호가 간다
+        assert client.put(f"/api/strategies/dca?code={code}", json={**cfg, "krw_amount": "90000"}).status_code == 428
+        code = sent[-1].split()[2]
+        r = client.put(f"/api/strategies/dca?code={code}", json={**cfg, "krw_amount": "90000"})
+        assert r.status_code == 200 and r.json()["config"]["mode"] == "live"
+        # 끄는 것은 인증 없이 바로 된다
+        assert client.put("/api/strategies/dca", json={**cfg, "krw_amount": "90000", "enabled": False}).status_code == 200

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type Market, type TraderConfig, type TraderView } from '../api'
+import { api, withTelegramCode, type Market, type TraderConfig, type TraderView } from '../api'
 import { formatKrw, formatKst, trendClass } from '../format'
 
 const REFRESH_MS = 5000
@@ -63,7 +63,7 @@ export function Trader({ markets }: { markets: Market[] }) {
     if (next.mode === 'live' && next.enabled && !confirm('실제 돈으로 사고팝니다. 계속할까요?')) return
     setBusy(true)
     try {
-      const v = await api.putTrader(next)
+      const v = await withTelegramCode((code) => api.putTrader(next, code))
       setView(v)
       setDraft(v.config)
       setMessage({ ok: true, text: '저장했습니다.' })

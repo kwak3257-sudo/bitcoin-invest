@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type DcaConfig, type DcaView, type Market } from '../api'
+import { api, withTelegramCode, type DcaConfig, type DcaView, type Market } from '../api'
 import { formatKrw, formatKst } from '../format'
 
 const WEEKDAYS = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
@@ -29,7 +29,7 @@ export function DcaSettings({ markets }: { markets: Market[] }) {
     if (next.mode === 'live' && next.enabled && !confirm('실제 돈으로 매수합니다. 계속할까요?')) return
     setSaving(true)
     try {
-      const v = await api.putDca(next)
+      const v = await withTelegramCode((code) => api.putDca(next, code))
       setView(v)
       setDraft(v.config)
       setMessage({ ok: true, text: '저장했습니다.' })
