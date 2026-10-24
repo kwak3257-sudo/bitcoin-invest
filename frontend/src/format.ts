@@ -4,7 +4,7 @@ const krw = new Intl.NumberFormat('ko-KR')
 
 export function formatKrw(value: string | number): string {
   const n = Number(value)
-  return `${krw.format(n >= 100 ? Math.round(n) : n)}원`
+  return `${krw.format(Math.abs(n) >= 100 ? Math.round(n) : n)}원`
 }
 
 export function formatRate(rate: string | number): string {

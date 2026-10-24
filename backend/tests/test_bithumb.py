@@ -95,3 +95,22 @@ async def test_buy_market_accepts_v1_style_response(ex):
     respx.post(f"{BASE_URL}/v2/orders").respond(201, json={"uuid": "o-2", "market": "KRW-BTC", "ord_type": "price"})
     order = await ex.buy_market("KRW-BTC", Decimal(5000))
     assert order.order_id == "o-2" and order.ord_type == "price"
+
+
+@respx.mock
+async def test_candle_history_pages_backwards(ex):
+    def row(ts):
+        return {"market": "KRW-BTC", "candle_date_time_kst": ts, "opening_price": 1, "high_price": 1,
+                "low_price": 1, "trade_price": 1, "candle_acc_trade_volume": 1}
+
+    def handler(request):
+        to = request.url.params.get("to")
+        if to is None:
+            return httpx.Response(200, json=[row("2026-10-22T03:00:00"), row("2026-10-22T02:00:00")])
+        if to == "2026-10-22 02:00:00":
+            return httpx.Response(200, json=[row("2026-10-22T01:00:00")])
+        return httpx.Response(200, json=[])
+
+    respx.get(f"{BASE_URL}/v1/candles/minutes/60").mock(side_effect=handler)
+    rows = await ex.candle_history("KRW-BTC", "1h", 10)
+    assert [c.time_kst.hour for c in rows] == [1, 2, 3]

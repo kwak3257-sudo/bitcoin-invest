@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, type Market, type Ticker } from './api'
 import { Analysis } from './components/Analysis'
+import { Backtest } from './components/Backtest'
 import { DcaSettings } from './components/DcaSettings'
 import { PriceChart } from './components/PriceChart'
 import { TickerTable } from './components/TickerTable'
@@ -9,7 +10,7 @@ import { formatKrw, formatRate, trendClass } from './format'
 const WATCHLIST = ['KRW-BTC', 'KRW-ETH', 'KRW-XRP', 'KRW-SOL', 'KRW-DOGE']
 const REFRESH_MS = 3000
 
-type Page = 'dashboard' | 'analysis' | 'auto'
+type Page = 'dashboard' | 'analysis' | 'backtest' | 'auto'
 
 export default function App() {
   const [page, setPage] = useState<Page>('dashboard')
@@ -56,6 +57,9 @@ export default function App() {
         <button className={page === 'analysis' ? 'active' : undefined} onClick={() => setPage('analysis')}>
           수익 분석
         </button>
+        <button className={page === 'backtest' ? 'active' : undefined} onClick={() => setPage('backtest')}>
+          백테스트
+        </button>
         <button className={page === 'auto' ? 'active' : undefined} onClick={() => setPage('auto')}>
           자동매매
         </button>
@@ -95,6 +99,7 @@ export default function App() {
         )}
 
         {page === 'analysis' && <Analysis />}
+        {page === 'backtest' && <Backtest markets={markets} />}
         {page === 'auto' && <DcaSettings markets={markets} />}
       </main>
     </div>

@@ -12,12 +12,15 @@ from decimal import Decimal
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from . import config
+from .backtest import BacktestCosts, run_backtest
 from .exchanges.base import ExchangeError
 from .exchanges.bithumb import CANDLE_PATHS, BithumbExchange
 from .store import DcaStore
 from .strategies.dca import KST, WeeklyDcaConfig, next_run, position_from_runs, take_profit_price
+from .strategies.short_term import ShortTermParams
 
 DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 
@@ -138,4 +141,32 @@ async def analysis():
         "sell_count": sum(1 for r in trades if r.side == "sell"),
         "curve": curve,
         "trades": list(reversed(trades)),
+    }
+
+
+class BacktestRequest(BaseModel):
+    market: str = "KRW-BTC"
+    interval: str = "1h"
+    candles: int = Field(1000, ge=50, le=3000, description="거슬러 올라갈 캔들 수")
+    params: ShortTermParams = ShortTermParams()
+    costs: BacktestCosts = BacktestCosts()
+
+
+@app.post("/api/backtest")
+async def backtest(req: BacktestRequest):
+    if req.interval not in CANDLE_PATHS:
+        raise HTTPException(400, f"interval은 {', '.join(CANDLE_PATHS)} 중 하나여야 합니다.")
+    candles = await app.state.exchange.candle_history(req.market, req.interval, req.candles)
+    try:
+        result = run_backtest(candles, req.params, req.costs)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "market": req.market,
+        "interval": req.interval,
+        "from": candles[0].time_kst,
+        "to": candles[-1].time_kst,
+        "candle_count": len(candles),
+        **result.__dict__,
+        "trades": [t.__dict__ for t in reversed(result.trades)],
     }
