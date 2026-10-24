@@ -12,7 +12,7 @@ from datetime import datetime
 from . import config
 from .exchanges.bithumb import BithumbExchange
 from .store import DcaStore
-from .strategies.dca import KST, run_if_due
+from .strategies.dca import KST, run_if_due, take_profit_if_reached
 
 log = logging.getLogger("engine")
 
@@ -21,9 +21,11 @@ async def tick(store: DcaStore, exchange) -> None:
     if not store.load().config.enabled:
         return
     with store.edit() as state:
-        run = await run_if_due(state, exchange, datetime.now(KST))
-    if run is not None:
-        log.info("정기 매수 실행: %s", run.message)
+        now = datetime.now(KST)
+        runs = [await run_if_due(state, exchange, now), await take_profit_if_reached(state, exchange, now)]
+    for run in runs:
+        if run is not None:
+            log.info("%s: %s", "매수" if run.side == "buy" else "매도", run.message)
 
 
 async def main() -> None:

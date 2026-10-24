@@ -76,6 +76,13 @@ main { flex: 1; padding: 24px; max-width: 1200px; }
 .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
 .runs { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
 
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.stat-label { color: var(--muted); font-size: 13px; }
+.stat-value { font-size: 20px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.stat-sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+main > .card + .card { margin-top: 16px; }
+
 .ok { color: #22c55e; }
 .error { color: #f87171; }
 .banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; background: #3f1d1d; }

@@ -23,3 +23,36 @@ def test_dca_roundtrip(tmp_path, monkeypatch):
 
         r = client.put("/api/strategies/dca", json={**body, "krw_amount": "100"})
         assert r.status_code == 422
+
+
+def test_analysis_includes_fees(tmp_path, monkeypatch):
+    from datetime import datetime
+    from decimal import Decimal
+
+    from app.exchanges.base import Ticker
+    from app.store import DcaStore
+    from app.strategies.dca import KST, DcaRun
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    from app.main import app
+
+    class Fake:
+        async def tickers(self, markets):
+            return [Ticker(markets[0], Decimal(120), Decimal(0), Decimal(0), Decimal(0), Decimal(0),
+                           Decimal(0), Decimal(0), datetime.now(KST))]
+
+        async def close(self):
+            pass
+
+    with DcaStore(tmp_path / "dca.json").edit() as state:
+        state.runs.append(DcaRun(at=datetime(2026, 10, 5, 9, tzinfo=KST), market="KRW-BTC", krw_amount=Decimal(10000),
+                                 mode="paper", price=Decimal(100), volume=Decimal(100), fee_krw=Decimal(25)))
+
+    with TestClient(app) as client:
+        app.state.exchange = Fake()
+        r = client.get("/api/analysis").json()
+    # 평가 = 100개 × 120원 × (1 - 0.0025) = 11970, 원가 10025
+    assert Decimal(r["value_krw"]) == Decimal("11970")
+    assert Decimal(r["total_pnl_krw"]) == Decimal("1945")
+    assert Decimal(r["fees_krw"]) == Decimal(25)
+    assert r["buy_count"] == 1 and len(r["curve"]) == 1

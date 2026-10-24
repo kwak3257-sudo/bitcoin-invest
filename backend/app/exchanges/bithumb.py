@@ -168,14 +168,27 @@ class BithumbExchange:
         if krw_amount <= 0:
             raise ExchangeError("주문 금액은 0원보다 커야 합니다.")
         body = {"market": market, "side": Side.BUY.value, "order_type": "price", "price": str(krw_amount)}
+        return await self._place_order(body)
+
+    async def sell_market(self, market: str, volume: Decimal) -> OrderResult:
+        """수량만큼 시장가 매도한다 (POST /v2/orders, order_type=market)."""
+        if volume <= 0:
+            raise ExchangeError("매도 수량은 0보다 커야 합니다.")
+        # 빗썸 수량 소수점은 8자리까지
+        qty = volume.quantize(Decimal("0.00000001"), rounding="ROUND_DOWN")
+        body = {"market": market, "side": Side.SELL.value, "order_type": "market", "volume": str(qty)}
+        return await self._place_order(body)
+
+    async def _place_order(self, body: dict[str, Any]) -> OrderResult:
+        market = body["market"]
         r = await self._request("POST", "/v2/orders", body=body, private=True)
         # v2 응답 형식은 문서에 표가 없어, v1 필드 이름(uuid, ord_type)도 함께 받는다
         created = r.get("created_at")
         return OrderResult(
             order_id=r.get("order_id") or r["uuid"],
             market=r.get("market", market),
-            side=Side.BUY,
-            ord_type=r.get("order_type") or r.get("ord_type", "price"),
+            side=Side(body["side"]),
+            ord_type=r.get("order_type") or r.get("ord_type", body["order_type"]),
             state=r.get("state", ""),
             created_at=datetime.fromisoformat(created) if created else datetime.now(timezone.utc),
         )
