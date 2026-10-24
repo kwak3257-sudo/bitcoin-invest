@@ -9,6 +9,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -191,6 +192,7 @@ class OptimizeRequest(BaseModel):
     market: str = "KRW-BTC"
     interval: str = "4h"
     candles: int = Field(3000, ge=300, le=3000)
+    strategy: Literal["ma_cross", "breakout"] = "ma_cross"
     costs: BacktestCosts = BacktestCosts()
 
 
@@ -201,7 +203,7 @@ async def backtest_optimize(req: OptimizeRequest):
     candles = await app.state.exchange.candle_history(req.market, req.interval, req.candles)
     try:
         # 수백 번 계산하므로 다른 요청을 막지 않게 별도 스레드에서 돌린다
-        return await asyncio.to_thread(optimize, candles, req.costs)
+        return await asyncio.to_thread(optimize, candles, req.costs, req.strategy)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

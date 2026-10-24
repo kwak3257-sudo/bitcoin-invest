@@ -8,6 +8,7 @@ const INTERVALS = [
   { value: '30m', label: '30분봉' },
   { value: '1h', label: '1시간봉' },
   { value: '4h', label: '4시간봉' },
+  { value: '1d', label: '일봉' },
 ] as const
 
 function signedKrw(v: string | number) {
@@ -93,6 +94,7 @@ export function Trader({ markets }: { markets: Market[] }) {
   }
 
   const cfg = view.config
+  const breakout = draft.params.strategy === 'breakout'
   const coin = cfg.market.replace('KRW-', '')
   const pos = view.position
   const status = view.stop_requested
@@ -161,8 +163,10 @@ export function Trader({ markets }: { markets: Market[] }) {
           </label>
         </div>
         <p className="summary">
-          짧은 이동평균이 긴 이동평균을 위로 뚫고 RSI가 과열이 아니면 운용 금액 전부로 삽니다. 반대로 꺾이거나
-          손절·익절가에 닿으면 팝니다. 백테스트에서 검증한 값을 넣으세요.
+          {breakout
+            ? '봉이 시작될 때 목표가(시가 + k × 직전 봉 변동폭)를 정하고, 가격이 넘으면 운용 금액 전부로 삽니다. 다음 봉이 시작되면 팝니다.'
+            : '짧은 이동평균이 긴 이동평균을 위로 뚫고 RSI가 과열이 아니면 운용 금액 전부로 삽니다. 반대로 꺾이거나 손절·익절가에 닿으면 팝니다.'}{' '}
+          백테스트에서 검증한 값을 넣으세요.
           <br />
           {view.keys_ready ? '빗썸 API 키 등록됨' : '빗썸 API 키 없음 (모의투자만 가능)'} · 텔레그램 알림{' '}
           {view.telegram_ready ? '켜짐' : '꺼짐'}
@@ -245,43 +249,77 @@ export function Trader({ markets }: { markets: Market[] }) {
             />
           </label>
           <label>
-            짧은 이동평균 (봉)
-            <input
-              type="number"
-              min={2}
-              value={draft.params.fast}
+            전략
+            <select
+              value={draft.params.strategy}
               onChange={(e) =>
                 setDraft({
                   ...draft,
-                  params: { ...draft.params, fast: Number(e.target.value) },
+                  params: {
+                    ...draft.params,
+                    strategy: e.target.value as TraderConfig['params']['strategy'],
+                    trend_period: null,
+                  },
                 })
               }
-            />
+            >
+              <option value="ma_cross">이동평균 교차</option>
+              <option value="breakout">변동성 돌파</option>
+            </select>
           </label>
-          <label>
-            긴 이동평균 (봉)
-            <input
-              type="number"
-              min={3}
-              value={draft.params.slow}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  params: { ...draft.params, slow: Number(e.target.value) },
-                })
-              }
-            />
-          </label>
-          <label>
-            RSI 상한
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={Number(draft.params.rsi_max)}
-              onChange={(e) => setParam('rsi_max', e.target.value)}
-            />
-          </label>
+          {breakout ? (
+            <label>
+              돌파 계수 k
+              <input
+                type="number"
+                min={0.05}
+                step={0.05}
+                value={Number(draft.params.k)}
+                onChange={(e) => setParam('k', e.target.value)}
+              />
+            </label>
+          ) : (
+            <>
+              <label>
+                짧은 이동평균 (봉)
+                <input
+                  type="number"
+                  min={2}
+                  value={draft.params.fast}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      params: { ...draft.params, fast: Number(e.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                긴 이동평균 (봉)
+                <input
+                  type="number"
+                  min={3}
+                  value={draft.params.slow}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      params: { ...draft.params, slow: Number(e.target.value) },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                RSI 상한
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={Number(draft.params.rsi_max)}
+                  onChange={(e) => setParam('rsi_max', e.target.value)}
+                />
+              </label>
+            </>
+          )}
           <label>
             손절 (%)
             <input
@@ -292,16 +330,18 @@ export function Trader({ markets }: { markets: Market[] }) {
               onChange={(e) => setParam('stop_loss_pct', e.target.value)}
             />
           </label>
-          <label>
-            익절 (%)
-            <input
-              type="number"
-              min={0.1}
-              step={0.1}
-              value={Number(draft.params.take_profit_pct)}
-              onChange={(e) => setParam('take_profit_pct', e.target.value)}
-            />
-          </label>
+          {!breakout && (
+            <label>
+              익절 (%)
+              <input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={Number(draft.params.take_profit_pct)}
+                onChange={(e) => setParam('take_profit_pct', e.target.value)}
+              />
+            </label>
+          )}
           <label>
             추세 필터
             <select
@@ -314,7 +354,7 @@ export function Trader({ markets }: { markets: Market[] }) {
               }
             >
               <option value="">끔</option>
-              {[50, 100, 200].map((n) => (
+              {(breakout ? [3, 5, 10, 20] : [50, 100, 200]).map((n) => (
                 <option key={n} value={n}>
                   {n}봉 이동평균 위에서만
                 </option>

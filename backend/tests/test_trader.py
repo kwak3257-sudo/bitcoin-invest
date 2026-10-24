@@ -157,3 +157,26 @@ async def test_failed_order_pauses_trading():
     assert not t.ok and s.position is None
     s.last_bar = None
     assert await step(s, ex, NOW + timedelta(minutes=1)) == []  # 5분 동안 쉰다
+
+
+async def test_breakout_buys_above_target_once_per_bar_and_sells_on_new_bar():
+    p = PARAMS.model_copy(update={"strategy": "breakout", "k": Decimal("0.5")})
+    s = TraderState(config=TraderConfig(enabled=True, params=p, daily_loss_limit_pct=Decimal(10)))
+    ex = FakeExchange(price=104)
+    prev = [Candle("KRW-BTC", datetime(2026, 10, 24, 10), *(Decimal(100),) * 4, Decimal(1)),
+            Candle("KRW-BTC", datetime(2026, 10, 24, 11), Decimal(100), Decimal(105), Decimal(95), Decimal(100),
+                   Decimal(1))]
+    current = Candle("KRW-BTC", datetime(2026, 10, 24, 12), *(Decimal(100),) * 4, Decimal(1))
+    ex.candles = lambda m, i, count=200: _async(prev + [current])
+    assert await step(s, ex, NOW) == []  # 목표가 105 아래
+    ex.price = Decimal(106)
+    [t] = await step(s, ex, NOW + timedelta(minutes=1))
+    assert t.side == "buy" and s.position is not None
+    ex.price = Decimal(103)  # 손절가(2%) 아래지만, 변동성 돌파는 봉 중간에 팔지 않고 다음 봉 시가에 판다
+    assert await step(s, ex, NOW + timedelta(minutes=2)) == []
+    later = NOW + timedelta(hours=1)
+    nxt = Candle("KRW-BTC", datetime(2026, 10, 24, 13), *(Decimal(100),) * 4, Decimal(1))
+    ex.candles = lambda m, i, count=200: _async(prev + [current, nxt])
+    ex.price = Decimal(107)
+    [t] = await step(s, ex, later)
+    assert t.side == "sell" and t.reason == "다음 봉 시가 청산"

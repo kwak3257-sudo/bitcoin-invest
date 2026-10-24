@@ -22,8 +22,25 @@ const DEFAULT: BacktestRequest = {
   market: 'KRW-BTC',
   interval: '1h',
   candles: 1000,
-  params: { fast: 9, slow: 26, rsi_period: 14, rsi_max: 70, stop_loss_pct: 2, take_profit_pct: 4, trend_period: null },
+  params: {
+    fast: 9,
+    slow: 26,
+    rsi_period: 14,
+    rsi_max: 70,
+    stop_loss_pct: 2,
+    take_profit_pct: 4,
+    trend_period: null,
+    strategy: 'ma_cross',
+    k: 0.5,
+  },
   costs: { fee_rate: 0.0025, slippage_pct: 0.05, initial_krw: 100000 },
+}
+
+function describe(p: BacktestParams) {
+  const trend = p.trend_period ? ` · 추세 ${p.trend_period}` : ''
+  const stop = Number(p.stop_loss_pct) >= 50 ? '손절 없음' : `손절 ${Number(p.stop_loss_pct)}%`
+  if (p.strategy === 'breakout') return `돌파 k ${Number(p.k)}${trend} · ${stop}`
+  return `${p.fast}/${p.slow}봉${trend} · ${stop} · 익절 ${Number(p.take_profit_pct)}%`
 }
 
 const pct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
@@ -100,7 +117,15 @@ export function Backtest({ markets }: { markets: Market[] }) {
     setOptimizing(true)
     setError(null)
     try {
-      setOpt(await api.optimize({ market: req.market, interval: req.interval, candles: req.candles, costs: req.costs }))
+      setOpt(
+        await api.optimize({
+          market: req.market,
+          interval: req.interval,
+          candles: req.candles,
+          costs: req.costs,
+          strategy: req.params.strategy,
+        }),
+      )
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -119,12 +144,15 @@ export function Backtest({ markets }: { markets: Market[] }) {
         stop_loss_pct: Number(params.stop_loss_pct),
         take_profit_pct: Number(params.take_profit_pct),
         trend_period: params.trend_period,
+        strategy: params.strategy,
+        k: Number(params.k),
       },
     }
     setReq(next)
     run(next)
   }
 
+  const isBreakout = req.params.strategy === 'breakout'
   const beatsHold = result && result.return_pct > result.buy_hold_pct
 
   return (
@@ -177,19 +205,51 @@ export function Backtest({ markets }: { markets: Market[] }) {
             min={10000}
             onChange={(v) => setCost('initial_krw', v)}
           />
-          <NumberField
-            label="짧은 이동평균 (봉)"
-            value={req.params.fast}
-            min={2}
-            onChange={(v) => setParam('fast', v)}
-          />
-          <NumberField label="긴 이동평균 (봉)" value={req.params.slow} min={3} onChange={(v) => setParam('slow', v)} />
-          <NumberField
-            label="RSI 상한 (이보다 높으면 진입 안 함)"
-            value={req.params.rsi_max}
-            min={1}
-            onChange={(v) => setParam('rsi_max', v)}
-          />
+          <label>
+            전략
+            <select
+              value={req.params.strategy}
+              onChange={(e) =>
+                setReq({
+                  ...req,
+                  params: { ...req.params, strategy: e.target.value as BacktestParams['strategy'], trend_period: null },
+                })
+              }
+            >
+              <option value="ma_cross">이동평균 교차</option>
+              <option value="breakout">변동성 돌파</option>
+            </select>
+          </label>
+          {isBreakout ? (
+            <NumberField
+              label="돌파 계수 k (직전 봉 변동폭의 몇 배)"
+              value={req.params.k}
+              step={0.05}
+              min={0.05}
+              onChange={(v) => setParam('k', v)}
+            />
+          ) : (
+            <>
+              <NumberField
+                label="짧은 이동평균 (봉)"
+                value={req.params.fast}
+                min={2}
+                onChange={(v) => setParam('fast', v)}
+              />
+              <NumberField
+                label="긴 이동평균 (봉)"
+                value={req.params.slow}
+                min={3}
+                onChange={(v) => setParam('slow', v)}
+              />
+              <NumberField
+                label="RSI 상한 (이보다 높으면 진입 안 함)"
+                value={req.params.rsi_max}
+                min={1}
+                onChange={(v) => setParam('rsi_max', v)}
+              />
+            </>
+          )}
           <NumberField
             label="손절 (%)"
             value={req.params.stop_loss_pct}
@@ -197,13 +257,15 @@ export function Backtest({ markets }: { markets: Market[] }) {
             min={0.1}
             onChange={(v) => setParam('stop_loss_pct', v)}
           />
-          <NumberField
-            label="익절 (%)"
-            value={req.params.take_profit_pct}
-            step={0.1}
-            min={0.1}
-            onChange={(v) => setParam('take_profit_pct', v)}
-          />
+          {!isBreakout && (
+            <NumberField
+              label="익절 (%)"
+              value={req.params.take_profit_pct}
+              step={0.1}
+              min={0.1}
+              onChange={(v) => setParam('take_profit_pct', v)}
+            />
+          )}
           <label>
             추세 필터 (큰 흐름이 오를 때만 매수)
             <select
@@ -216,7 +278,7 @@ export function Backtest({ markets }: { markets: Market[] }) {
               }
             >
               <option value="">끔</option>
-              {[50, 100, 200].map((n) => (
+              {(isBreakout ? [3, 5, 10, 20] : [50, 100, 200]).map((n) => (
                 <option key={n} value={n}>
                   {n}봉 이동평균 위에서만
                 </option>
@@ -276,11 +338,7 @@ export function Backtest({ markets }: { markets: Market[] }) {
             <tbody>
               {opt.picks.map((pk, i) => (
                 <tr key={i}>
-                  <td>
-                    {pk.params.fast}/{pk.params.slow}봉
-                    {pk.params.trend_period ? ` · 추세 ${pk.params.trend_period}` : ''} · 손절{' '}
-                    {Number(pk.params.stop_loss_pct)}% · 익절 {Number(pk.params.take_profit_pct)}%
-                  </td>
+                  <td>{describe(pk.params)}</td>
                   <td className={`num ${trendClass(pk.train.return_pct)}`}>{pct(pk.train.return_pct)}</td>
                   <td className={`num ${trendClass(pk.test.return_pct)}`}>{pct(pk.test.return_pct)}</td>
                   <td className="num hide-sm">{pct(pk.test.buy_hold_pct)}</td>

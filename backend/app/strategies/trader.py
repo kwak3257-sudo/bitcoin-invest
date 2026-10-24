@@ -18,9 +18,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..exchanges.base import Exchange, ExchangeError
 from .dca import KST, MIN_ORDER_KRW
-from .short_term import ShortTermParams, signals
+from .short_term import ShortTermParams, breakout_target, signals, trend_ok
 
-INTERVAL_MINUTES = {"15m": 15, "30m": 30, "1h": 60, "4h": 240}
+INTERVAL_MINUTES = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 # 주문이 실패하면 이 시간 동안 새 주문을 내지 않는다 (같은 오류 반복과 알림 폭탄 방지)
 ERROR_PAUSE = timedelta(minutes=5)
 
@@ -29,7 +29,7 @@ class TraderConfig(BaseModel):
     enabled: bool = False
     mode: Literal["paper", "live"] = "paper"
     market: str = "KRW-BTC"
-    interval: Literal["15m", "30m", "1h", "4h"] = "1h"
+    interval: Literal["15m", "30m", "1h", "4h", "1d"] = "1h"
     params: ShortTermParams = ShortTermParams()
     budget_krw: Decimal = Field(Decimal(100000), description="이 전략이 쓸 수 있는 최대 원화")
     daily_loss_limit_pct: Decimal = Field(Decimal(3), gt=0, le=50, description="운용 금액 대비 하루 손실 한도(%)")
@@ -78,6 +78,7 @@ class TraderState(BaseModel):
     position: OpenPosition | None = None
     trades: list[TraderTrade] = []
     last_bar: datetime | None = None
+    entry_bar: datetime | None = None  # 변동성 돌파: 이 봉에서 이미 샀으면 다시 사지 않는다
     halted_until: datetime | None = None
     halt_reason: str | None = None
     stop_requested: bool = False
@@ -239,7 +240,8 @@ async def step(state: TraderState, exchange: Exchange, now: datetime) -> list[Tr
 
     # 1) 손절·익절: 현재가 기준
     pos = state.position
-    if pos is not None:
+    breakout = cfg.params.strategy == "breakout"
+    if pos is not None and not breakout:  # 변동성 돌파는 다음 봉 시가에 판다
         p = cfg.params
         if price <= pos.entry_price * (1 - p.stop_loss_pct / 100):
             record(await _sell(state, exchange, price, now, "손절"))
@@ -270,7 +272,12 @@ async def step(state: TraderState, exchange: Exchange, now: datetime) -> list[Tr
     else:
         candles = await exchange.candles(cfg.market, cfg.interval, need)
     bars = _completed(candles, cfg.interval, now)
-    if len(bars) < cfg.params.warmup or bars[-1].time_kst == state.last_bar:
+    if len(bars) < cfg.params.warmup:
+        return done
+    if breakout:
+        await _breakout(state, exchange, candles, bars, price, now, record)
+        return done
+    if bars[-1].time_kst == state.last_bar:
         return done
     state.last_bar = bars[-1].time_kst
     sig = signals([float(c.close) for c in bars], cfg.params)[-1]
@@ -279,3 +286,24 @@ async def step(state: TraderState, exchange: Exchange, now: datetime) -> list[Tr
     elif sig == "sell" and state.position is not None:
         record(await _sell(state, exchange, price, now, "매도 신호"))
     return done
+
+
+async def _breakout(state: TraderState, exchange: Exchange, candles, bars, price: Decimal, now: datetime, record) -> None:
+    """변동성 돌파: 새 봉이 시작되면 들고 있던 것을 팔고, 진행 중인 봉에서 목표가를 넘으면 산다."""
+    cfg = state.config
+    if bars[-1].time_kst != state.last_bar:
+        state.last_bar = bars[-1].time_kst
+        if state.position is not None:
+            record(await _sell(state, exchange, price, now, "다음 봉 시가 청산"))
+            return
+    current = candles[-1]
+    if current.time_kst <= bars[-1].time_kst or state.position is not None or state.entry_bar == current.time_kst:
+        return
+    prev = bars[-1]
+    closes = [float(c.close) for c in bars]
+    if not trend_ok(closes, len(closes) - 1, cfg.params):
+        return
+    target = breakout_target(float(current.open), float(prev.high), float(prev.low), cfg.params.k)
+    if float(price) >= target:
+        state.entry_bar = current.time_kst  # 실패해도 같은 봉에서 다시 사지 않는다
+        record(await _buy(state, exchange, price, now, f"변동성 돌파 (목표가 {target:,.0f}원)"))

@@ -95,6 +95,8 @@ export interface BacktestParams {
   stop_loss_pct: number
   take_profit_pct: number
   trend_period: number | null
+  strategy: 'ma_cross' | 'breakout'
+  k: number
 }
 
 export interface BacktestRequest {
@@ -139,7 +141,7 @@ export interface TraderConfig {
   enabled: boolean
   mode: 'paper' | 'live'
   market: string
-  interval: '15m' | '30m' | '1h' | '4h'
+  interval: '15m' | '30m' | '1h' | '4h' | '1d'
   params: {
     fast: number
     slow: number
@@ -148,6 +150,8 @@ export interface TraderConfig {
     stop_loss_pct: string
     take_profit_pct: string
     trend_period: number | null
+    strategy: 'ma_cross' | 'breakout'
+    k: string
   }
   budget_krw: string
   daily_loss_limit_pct: string
@@ -229,7 +233,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = body?.detail
     const message = Array.isArray(detail)
       ? detail.map((d: { msg: string }) => d.msg.replace(/^Value error, /, '')).join(' ')
-      : detail ?? `요청 실패 (${res.status})`
+      : (detail ?? `요청 실패 (${res.status})`)
     throw new ApiError(message, res.status)
   }
   return res.json()
@@ -261,13 +265,12 @@ export async function withTelegramCode<T>(send: (code?: string) => Promise<T>): 
 
 export const api = {
   markets: () => request<Market[]>('/api/markets'),
-  tickers: (markets: string[]) =>
-    request<Ticker[]>(`/api/tickers?markets=${encodeURIComponent(markets.join(','))}`),
+  tickers: (markets: string[]) => request<Ticker[]>(`/api/tickers?markets=${encodeURIComponent(markets.join(','))}`),
   candles: (market: string, interval: string) =>
     request<Candle[]>(`/api/candles?market=${market}&interval=${interval}&count=200`),
   backtest: (req: BacktestRequest) =>
     request<BacktestResult>('/api/backtest', { method: 'POST', body: JSON.stringify(req) }),
-  optimize: (req: Omit<BacktestRequest, 'params'>) =>
+  optimize: (req: Omit<BacktestRequest, 'params'> & { strategy: BacktestParams['strategy'] }) =>
     request<OptimizeResult>('/api/backtest/optimize', { method: 'POST', body: JSON.stringify(req) }),
   analysis: () => request<Analysis>('/api/analysis'),
   getTrader: () => request<TraderView>('/api/strategies/trader'),
