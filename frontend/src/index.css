@@ -84,6 +84,10 @@ main { flex: 1; padding: 24px; max-width: 1200px; }
 main > .card + .card { margin-top: 16px; }
 
 .ok { color: #22c55e; }
+.hero .danger {
+  margin-left: auto; padding: 10px 18px; border: 0; border-radius: 8px; background: #dc2626; color: #fff; font-weight: 700; cursor: pointer;
+}
+.hero .danger:disabled { opacity: 0.4; cursor: default; }
 .error { color: #f87171; }
 .banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; background: #3f1d1d; }
 
@@ -91,6 +95,7 @@ main > .card + .card { margin-top: 16px; }
   .layout { flex-direction: column; }
   .sidebar { width: auto; flex-direction: row; align-items: center; padding: 10px 12px; overflow-x: auto; }
   .brand { margin: 0 12px 0 4px; font-size: 16px; white-space: nowrap; }
+  .sidebar button { white-space: nowrap; flex-shrink: 0; }
   .exchange-tag { display: none; }
   main { padding: 16px; }
   .grid { grid-template-columns: 1fr; }

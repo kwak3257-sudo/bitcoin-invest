@@ -11,13 +11,17 @@
 - 수익 분석 화면: 투자 원금, 평가 금액, 실현·미실현 손익, 수익률, 낸 수수료, 손익 흐름 차트, 거래 기록
 - 매매 엔진: API 서버와 별도 프로세스로 실행, 같은 주에 두 번 매수하지 않음
 - 한국어 웹 화면: 대시보드(관심 코인 시세, 캔들 차트), 자동매매 설정. 휴대폰 화면 대응
+- 백테스트: 이동평균 교차 + RSI 단기 전략을 과거 캔들로 돌려 수수료·슬리피지를 뺀 성과를 "그냥 보유"와 비교
+- 단기 매매 자동 운영: 백테스트와 같은 전략을 봉이 끝날 때마다 실행. 운용 금액 한도, 손절·익절,
+  하루 손실 한도(넘으면 보유분을 팔고 다음 날 0시까지 쉼), 긴급 정지 버튼, 텔레그램 알림
 
 ## 구조
 
 ```
 backend/   Python FastAPI API 서버 + 매매 엔진
   app/exchanges/   거래소 어댑터 (공통 인터페이스 base.py, 빗썸 bithumb.py)
-  app/strategies/  매매 전략 (주간 정기 매수 dca.py)
+  app/strategies/  매매 전략 (주간 정기 매수 dca.py, 단기 신호 short_term.py, 단기 자동 운영 trader.py)
+  app/backtest.py  백테스트
   app/engine.py    매매 엔진 (python -m app.engine)
   app/main.py      API 서버
 frontend/  React + TypeScript 화면 (Vite)
@@ -28,6 +32,12 @@ frontend/  React + TypeScript 화면 (Vite)
 1. 파이썬 3.12 이상(설치 때 "Add python.exe to PATH" 체크), Node.js LTS, Git을 설치합니다.
 2. `setup.bat`을 더블클릭합니다. 끝나면 `.env` 파일에 빗썸 API 키를 넣습니다.
 3. `start.bat`을 더블클릭하면 API 서버, 매매 엔진, 화면이 켜지고 브라우저가 열립니다.
+
+### 텔레그램 알림 켜기 (선택)
+
+1. 텔레그램에서 `@BotFather`에게 `/newbot`을 보내 봇을 만들고 토큰을 받습니다.
+2. 만든 봇에게 아무 메시지나 보낸 뒤, 브라우저에서 `https://api.telegram.org/bot<토큰>/getUpdates`를 열어 `"chat":{"id":` 뒤의 숫자를 찾습니다.
+3. `.env`의 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`에 넣고 `start.bat`을 다시 실행합니다.
 
 ## 직접 실행 (맥, 리눅스)
 

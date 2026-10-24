@@ -134,6 +134,56 @@ export interface BacktestResult {
   equity: { time: string; equity: number; buy_hold: number }[]
 }
 
+export interface TraderConfig {
+  enabled: boolean
+  mode: 'paper' | 'live'
+  market: string
+  interval: '15m' | '30m' | '1h' | '4h'
+  params: { fast: number; slow: number; rsi_period: number; rsi_max: string; stop_loss_pct: string; take_profit_pct: string }
+  budget_krw: string
+  daily_loss_limit_pct: string
+  fee_rate: string
+}
+
+export interface TraderTrade {
+  at: string
+  market: string
+  side: 'buy' | 'sell'
+  mode: 'paper' | 'live'
+  reason: string
+  price: string | null
+  volume: string
+  krw_amount: string
+  fee_krw: string
+  pnl_krw: string | null
+  ok: boolean
+  message: string
+}
+
+export interface TraderView {
+  config: TraderConfig
+  keys_ready: boolean
+  telegram_ready: boolean
+  price: string | null
+  position: { entry_at: string; entry_price: string; volume: string; cost_krw: string } | null
+  position_value_krw: string | null
+  cash_krw: string
+  equity_krw: string
+  realized_pnl_krw: string
+  total_pnl_krw: string
+  return_pct: string
+  today_pnl_krw: string
+  daily_loss_limit_krw: string
+  fees_krw: string
+  trade_count: number
+  win_rate_pct: number
+  halted_until: string | null
+  halt_reason: string | null
+  stop_requested: boolean
+  curve: { at: string; pnl: string }[]
+  trades: TraderTrade[]
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -159,6 +209,10 @@ export const api = {
   backtest: (req: BacktestRequest) =>
     request<BacktestResult>('/api/backtest', { method: 'POST', body: JSON.stringify(req) }),
   analysis: () => request<Analysis>('/api/analysis'),
+  getTrader: () => request<TraderView>('/api/strategies/trader'),
+  putTrader: (cfg: TraderConfig) =>
+    request<TraderView>('/api/strategies/trader', { method: 'PUT', body: JSON.stringify(cfg) }),
+  stopTrader: () => request<TraderView>('/api/strategies/trader/stop', { method: 'POST' }),
   getDca: () => request<DcaView>('/api/strategies/dca'),
   putDca: (cfg: DcaConfig) =>
     request<DcaView>('/api/strategies/dca', { method: 'PUT', body: JSON.stringify(cfg) }),

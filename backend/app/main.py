@@ -14,13 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import config
+from . import config, notify
 from .backtest import BacktestCosts, run_backtest
 from .exchanges.base import ExchangeError
 from .exchanges.bithumb import CANDLE_PATHS, BithumbExchange
-from .store import DcaStore
+from .store import DcaStore, TraderStore
 from .strategies.dca import KST, WeeklyDcaConfig, next_run, position_from_runs, take_profit_price
 from .strategies.short_term import ShortTermParams
+from .strategies.trader import TraderConfig, daily_loss_limit_krw, position_value, today_pnl
 
 DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 
@@ -29,6 +30,7 @@ DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 async def lifespan(app: FastAPI):
     app.state.exchange = BithumbExchange(config.BITHUMB_ACCESS_KEY, config.BITHUMB_SECRET_KEY)
     app.state.dca_store = DcaStore(config.DATA_DIR / "dca.json")
+    app.state.trader_store = TraderStore(config.DATA_DIR / "trader.json")
     yield
     await app.state.exchange.close()
 
@@ -170,3 +172,75 @@ async def backtest(req: BacktestRequest):
         **result.__dict__,
         "trades": [t.__dict__ for t in reversed(result.trades)],
     }
+
+
+async def _trader_view(state) -> dict:
+    cfg = state.config
+    price = None
+    try:
+        [ticker] = await app.state.exchange.tickers([cfg.market])
+        price = ticker.price
+    except ExchangeError:
+        pass  # 시세를 못 받아도 설정과 기록은 보여 준다
+    now = datetime.now(KST)
+    value = position_value(state, price) if price is not None else None
+    equity = state.cash_krw + (value or Decimal(0))
+    # 기록 순서대로 누적 확정 손익
+    curve, total = [], Decimal(0)
+    for t in state.trades:
+        if t.ok and t.pnl_krw is not None:
+            total += t.pnl_krw
+            curve.append({"at": t.at, "pnl": total})
+    sells = [t for t in state.trades if t.ok and t.pnl_krw is not None]
+    return {
+        "config": cfg,
+        "keys_ready": bool(config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY),
+        "telegram_ready": notify.enabled(),
+        "price": price,
+        "position": state.position,
+        "position_value_krw": value,
+        "cash_krw": state.cash_krw,
+        "equity_krw": equity,
+        "realized_pnl_krw": state.realized_pnl,
+        "total_pnl_krw": equity - cfg.budget_krw,
+        "return_pct": (equity / cfg.budget_krw - 1) * 100,
+        "today_pnl_krw": today_pnl(state, price, now),
+        "daily_loss_limit_krw": daily_loss_limit_krw(cfg),
+        "fees_krw": state.fees_krw,
+        "trade_count": len(sells),
+        "win_rate_pct": sum(1 for t in sells if t.pnl_krw > 0) / len(sells) * 100 if sells else 0,
+        "halted_until": state.halted_until,
+        "halt_reason": state.halt_reason,
+        "stop_requested": state.stop_requested,
+        "curve": curve,
+        "trades": list(reversed(state.trades[-100:])),
+    }
+
+
+@app.get("/api/strategies/trader")
+async def get_trader():
+    return await _trader_view(app.state.trader_store.load())
+
+
+@app.put("/api/strategies/trader")
+async def put_trader(cfg: TraderConfig):
+    if cfg.mode == "live" and not (config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY):
+        raise HTTPException(400, "실거래 모드는 빗썸 API 키를 등록한 뒤에 켤 수 있습니다.")
+    with app.state.trader_store.edit() as state:
+        if state.position is not None and (cfg.market != state.config.market or cfg.mode != state.config.mode):
+            raise HTTPException(400, "보유 중에는 코인이나 모드를 바꿀 수 없습니다. 긴급 정지로 먼저 정리하세요.")
+        if cfg.enabled and not state.config.enabled:
+            state.halted_until = state.halt_reason = None
+        state.config = cfg
+    return await _trader_view(state)
+
+
+@app.post("/api/strategies/trader/stop")
+async def stop_trader():
+    """긴급 정지: 엔진이 다음 확인 때(최대 수십 초) 보유분을 시장가로 팔고 전략을 끈다."""
+    with app.state.trader_store.edit() as state:
+        if state.position is None:
+            state.config = state.config.model_copy(update={"enabled": False})
+        else:
+            state.stop_requested = True
+    return await _trader_view(state)

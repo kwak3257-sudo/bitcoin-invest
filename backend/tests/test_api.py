@@ -56,3 +56,47 @@ def test_analysis_includes_fees(tmp_path, monkeypatch):
     assert Decimal(r["total_pnl_krw"]) == Decimal("1945")
     assert Decimal(r["fees_krw"]) == Decimal(25)
     assert r["buy_count"] == 1 and len(r["curve"]) == 1
+
+
+def test_trader_settings_and_emergency_stop(tmp_path, monkeypatch):
+    from datetime import datetime
+    from decimal import Decimal
+
+    from app.exchanges.base import Ticker
+    from app.store import TraderStore
+    from app.strategies.dca import KST
+    from app.strategies.trader import OpenPosition
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    from app.main import app
+
+    class Fake:
+        async def tickers(self, markets):
+            return [Ticker(markets[0], Decimal(110), *(Decimal(0),) * 6, datetime.now(KST))]
+
+        async def close(self):
+            pass
+
+    with TestClient(app) as client:
+        app.state.exchange = Fake()
+        r = client.get("/api/strategies/trader")
+        assert r.status_code == 200
+        v = r.json()
+        assert v["config"]["enabled"] is False and v["config"]["mode"] == "paper"
+        assert Decimal(v["daily_loss_limit_krw"]) == 3000
+
+        cfg = {**v["config"], "enabled": True}
+        assert client.put("/api/strategies/trader", json=cfg).json()["config"]["enabled"] is True
+        assert client.put("/api/strategies/trader", json={**cfg, "mode": "live"}).status_code == 400
+
+        store = TraderStore(tmp_path / "trader.json")
+        with store.edit() as s:
+            s.position = OpenPosition(entry_at=datetime.now(KST), entry_price=Decimal(100), volume=Decimal(100),
+                                      cost_krw=Decimal(10025))
+        v = client.get("/api/strategies/trader").json()
+        # 평가 금액은 매도 수수료를 뺀다: 100 * 110 * 0.9975
+        assert Decimal(v["position_value_krw"]) == Decimal("10972.5")
+        assert client.put("/api/strategies/trader", json={**cfg, "market": "KRW-ETH"}).status_code == 400
+
+        v = client.post("/api/strategies/trader/stop").json()
+        assert v["stop_requested"] is True  # 보유 중이면 엔진이 팔고 끈다
