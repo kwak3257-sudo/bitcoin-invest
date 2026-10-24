@@ -23,7 +23,13 @@ backend/   Python FastAPI API 서버 + 매매 엔진
 frontend/  React + TypeScript 화면 (Vite)
 ```
 
-## 실행 방법
+## 윈도우 PC에서 실행
+
+1. 파이썬 3.12 이상(설치 때 "Add python.exe to PATH" 체크), Node.js LTS, Git을 설치합니다.
+2. `setup.bat`을 더블클릭합니다. 끝나면 `.env` 파일에 빗썸 API 키를 넣습니다.
+3. `start.bat`을 더블클릭하면 API 서버, 매매 엔진, 화면이 켜지고 브라우저가 열립니다.
+
+## 직접 실행 (맥, 리눅스)
 
 ```bash
 # 1) 백엔드
