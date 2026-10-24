@@ -77,12 +77,19 @@ export function Trader({ markets }: { markets: Market[] }) {
     }
   }
 
-  async function findBest() {
+  async function findBest(applyTop = false) {
     if (!draft) return
     setFinding(true)
     setMessage(null)
     try {
-      setRows((await api.recommend(draft.market, draft.fee_rate)).rows)
+      const found = (await api.recommend(draft.market, draft.fee_rate)).rows
+      setRows(found)
+      if (applyTop) {
+        // 검증 기간에 실제로 거래해서 수익을 낸 설정만 넣는다
+        const best = found.find((r) => r.test.trade_count > 0 && r.test.return_pct > 0)
+        if (best) applyPaper(best)
+        else setMessage({ ok: false, text: '검증 기간에 수익을 낸 설정이 없어 바꾸지 않았어요.' })
+      }
     } catch (e) {
       setMessage({ ok: false, text: (e as Error).message })
     } finally {
@@ -179,9 +186,15 @@ export function Trader({ markets }: { markets: Market[] }) {
       <section className="card" style={{ marginBottom: 16 }}>
         <div className="card-head">
           <h2>전략 자동 찾기</h2>
-          <button className="link" onClick={findBest} disabled={finding || busy}>
-            {finding ? '두 전략 × 4시간봉·일봉 계산 중… (1분 정도)' : rows ? '다시 찾기' : '찾기 시작'}
+          <button className="link" onClick={() => findBest()} disabled={finding || busy}>
+            {rows ? '다시 찾기' : '목록만 보기'}
           </button>
+        </div>
+        <div className="form-actions" style={{ marginBottom: 12 }}>
+          <button onClick={() => findBest(true)} disabled={finding || busy}>
+            {finding ? '두 전략 × 4시간봉·일봉 계산 중… (1분 정도)' : '가장 좋은 설정 찾아서 모의투자에 넣기'}
+          </button>
+          {message && <span className={message.ok ? 'ok' : 'error'}>{message.text}</span>}
         </div>
         <p className="summary">
           이동평균 교차와 변동성 돌파를 4시간봉·일봉 과거 3000개 봉으로 수백 가지씩 돌려, 앞 70% 기간에서 고른 설정을 뒤
