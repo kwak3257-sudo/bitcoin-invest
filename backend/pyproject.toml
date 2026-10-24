@@ -9,6 +9,8 @@ dependencies = [
     "httpx>=0.27",
     "pyjwt>=2.8",
     "pydantic>=2.7",
+    # 윈도우에는 시간대 정보(Asia/Seoul)가 없어 따로 설치한다
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
