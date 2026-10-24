@@ -2,6 +2,7 @@
 
 공개 API(마켓, 현재가, 캔들)는 키 없이 호출하고,
 개인 API(잔고, 주문)는 Access/Secret Key로 만든 JWT를 붙인다.
+엔드포인트마다 버전(/v1, /v2)이 다르다. 주문은 /v2/orders.
 참고: https://apidocs.bithumb.com
 """
 
@@ -163,16 +164,18 @@ class BithumbExchange:
         ]
 
     async def buy_market(self, market: str, krw_amount: Decimal) -> OrderResult:
-        """원화 금액만큼 시장가 매수한다 (ord_type=price)."""
+        """원화 금액만큼 시장가 매수한다 (POST /v2/orders, order_type=price)."""
         if krw_amount <= 0:
             raise ExchangeError("주문 금액은 0원보다 커야 합니다.")
-        body = {"market": market, "side": Side.BUY.value, "ord_type": "price", "price": str(krw_amount)}
-        r = await self._request("POST", "/v1/orders", body=body, private=True)
+        body = {"market": market, "side": Side.BUY.value, "order_type": "price", "price": str(krw_amount)}
+        r = await self._request("POST", "/v2/orders", body=body, private=True)
+        # v2 응답 형식은 문서에 표가 없어, v1 필드 이름(uuid, ord_type)도 함께 받는다
+        created = r.get("created_at")
         return OrderResult(
-            order_id=r["uuid"],
-            market=r["market"],
-            side=Side(r["side"]),
-            ord_type=r["ord_type"],
+            order_id=r.get("order_id") or r["uuid"],
+            market=r.get("market", market),
+            side=Side.BUY,
+            ord_type=r.get("order_type") or r.get("ord_type", "price"),
             state=r.get("state", ""),
-            created_at=datetime.fromisoformat(r["created_at"]),
+            created_at=datetime.fromisoformat(created) if created else datetime.now(timezone.utc),
         )

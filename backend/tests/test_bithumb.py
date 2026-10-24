@@ -1,4 +1,5 @@
 import hashlib
+import json
 from decimal import Decimal
 from urllib.parse import urlencode
 
@@ -59,8 +60,8 @@ async def test_candles_rejects_unknown_interval(ex):
 
 @respx.mock
 async def test_buy_market_signs_body(ex):
-    route = respx.post(f"{BASE_URL}/v1/orders").respond(json={
-        "uuid": "o-1", "market": "KRW-BTC", "side": "bid", "ord_type": "price",
+    route = respx.post(f"{BASE_URL}/v2/orders").respond(201, json={
+        "order_id": "o-1", "market": "KRW-BTC", "side": "bid", "order_type": "price",
         "state": "wait", "created_at": "2026-10-22T09:00:00+09:00",
     })
     order = await ex.buy_market("KRW-BTC", Decimal(10000))
@@ -68,7 +69,8 @@ async def test_buy_market_signs_body(ex):
     req = route.calls.last.request
     token = req.headers["Authorization"].removeprefix("Bearer ")
     claims = jwt.decode(token, "sk", algorithms=["HS256"])
-    body = {"market": "KRW-BTC", "side": "bid", "ord_type": "price", "price": "10000"}
+    body = {"market": "KRW-BTC", "side": "bid", "order_type": "price", "price": "10000"}
+    assert json.loads(req.content) == body
     assert claims["access_key"] == "ak"
     assert claims["query_hash"] == hashlib.sha512(urlencode(body).encode()).hexdigest()
 
@@ -86,3 +88,10 @@ async def test_private_call_without_keys():
     with pytest.raises(ExchangeError, match="API 키"):
         await e.balances()
     await e.close()
+
+
+@respx.mock
+async def test_buy_market_accepts_v1_style_response(ex):
+    respx.post(f"{BASE_URL}/v2/orders").respond(201, json={"uuid": "o-2", "market": "KRW-BTC", "ord_type": "price"})
+    order = await ex.buy_market("KRW-BTC", Decimal(5000))
+    assert order.order_id == "o-2" and order.ord_type == "price"
