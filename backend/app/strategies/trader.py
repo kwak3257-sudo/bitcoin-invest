@@ -264,9 +264,13 @@ async def step(state: TraderState, exchange: Exchange, now: datetime) -> list[Tr
         return done  # 이번에 이미 팔았으면 신호 확인은 다음 차례에
 
     # 3) 봉이 새로 끝났으면 신호 확인
-    need = max(cfg.params.slow, cfg.params.rsi_period) + 50
-    bars = _completed(await exchange.candles(cfg.market, cfg.interval, min(need, 200)), cfg.interval, now)
-    if len(bars) < cfg.params.slow + 2 or bars[-1].time_kst == state.last_bar:
+    need = cfg.params.warmup + 50
+    if need > 200:
+        candles = await exchange.candle_history(cfg.market, cfg.interval, need)
+    else:
+        candles = await exchange.candles(cfg.market, cfg.interval, need)
+    bars = _completed(candles, cfg.interval, now)
+    if len(bars) < cfg.params.warmup or bars[-1].time_kst == state.last_bar:
         return done
     state.last_bar = bars[-1].time_kst
     sig = signals([float(c.close) for c in bars], cfg.params)[-1]

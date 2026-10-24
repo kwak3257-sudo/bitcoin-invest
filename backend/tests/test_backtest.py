@@ -80,3 +80,37 @@ def test_metrics_shape():
     assert len(r.equity) == 200
     assert 0 <= r.max_drawdown_pct <= 100
     assert 0 <= r.win_rate_pct <= 100
+
+
+def test_trend_filter_blocks_buys_in_downtrend():
+    from app.strategies.short_term import signals
+
+    # 긴 하락 뒤 잠깐 반등: 교차는 나오지만 200봉 평균 아래라 사지 않는다
+    closes = [300 - i for i in range(250)] + [50, 50, 50, 40, 70]
+    base = ShortTermParams(fast=2, slow=3, rsi_period=2, rsi_max=100)
+    assert "buy" in signals(closes, base)
+    assert "buy" not in signals(closes, base.model_copy(update={"trend_period": 200}))
+
+
+def test_trade_from_ignores_earlier_bars():
+    candles = candles_from([100] * 30 + [110] * 30)
+    p = ShortTermParams(fast=2, slow=3, rsi_period=2)
+    r = run_backtest(candles, p, BacktestCosts(), trade_from=40)
+    assert r.equity[0]["time"] == candles[40].time_kst
+    assert all(t.entry_time >= candles[40].time_kst for t in r.trades)
+
+
+def test_optimize_reports_train_and_test(monkeypatch):
+    import math
+
+    from app import backtest
+
+    monkeypatch.setattr(backtest, "GRID", {
+        "fast": [3, 5], "slow": [10], "trend_period": [None], "stop_loss_pct": [2], "take_profit_pct": [4],
+    })
+    closes = [100 + 10 * math.sin(i / 8) for i in range(400)]
+    out = backtest.optimize(candles_from(closes), BacktestCosts())
+    assert out["tested"] == 2 and len(out["picks"]) == 2
+    first = out["picks"][0]
+    assert first["train"]["return_pct"] >= out["picks"][1]["train"]["return_pct"]
+    assert "return_pct" in first["test"]

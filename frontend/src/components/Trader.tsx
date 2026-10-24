@@ -302,6 +302,25 @@ export function Trader({ markets }: { markets: Market[] }) {
               onChange={(e) => setParam('take_profit_pct', e.target.value)}
             />
           </label>
+          <label>
+            추세 필터
+            <select
+              value={draft.params.trend_period ?? ''}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  params: { ...draft.params, trend_period: e.target.value ? Number(e.target.value) : null },
+                })
+              }
+            >
+              <option value="">끔</option>
+              {[50, 100, 200].map((n) => (
+                <option key={n} value={n}>
+                  {n}봉 이동평균 위에서만
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="form-actions">
             <button type="submit" disabled={busy}>
               {busy ? '저장 중…' : '설정 저장'}

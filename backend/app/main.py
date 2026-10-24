@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -15,7 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import config, notify
-from .backtest import BacktestCosts, run_backtest
+from .backtest import BacktestCosts, optimize, run_backtest
 from .exchanges.base import ExchangeError
 from .exchanges.bithumb import CANDLE_PATHS, BithumbExchange
 from .store import DcaStore, TraderStore
@@ -172,6 +173,25 @@ async def backtest(req: BacktestRequest):
         **result.__dict__,
         "trades": [t.__dict__ for t in reversed(result.trades)],
     }
+
+
+class OptimizeRequest(BaseModel):
+    market: str = "KRW-BTC"
+    interval: str = "4h"
+    candles: int = Field(3000, ge=300, le=3000)
+    costs: BacktestCosts = BacktestCosts()
+
+
+@app.post("/api/backtest/optimize")
+async def backtest_optimize(req: OptimizeRequest):
+    if req.interval not in CANDLE_PATHS:
+        raise HTTPException(400, f"interval은 {', '.join(CANDLE_PATHS)} 중 하나여야 합니다.")
+    candles = await app.state.exchange.candle_history(req.market, req.interval, req.candles)
+    try:
+        # 수백 번 계산하므로 다른 요청을 막지 않게 별도 스레드에서 돌린다
+        return await asyncio.to_thread(optimize, candles, req.costs)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 async def _trader_view(state) -> dict:

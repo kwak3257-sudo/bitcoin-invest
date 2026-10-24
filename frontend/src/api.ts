@@ -94,6 +94,7 @@ export interface BacktestParams {
   rsi_max: number
   stop_loss_pct: number
   take_profit_pct: number
+  trend_period: number | null
 }
 
 export interface BacktestRequest {
@@ -139,7 +140,15 @@ export interface TraderConfig {
   mode: 'paper' | 'live'
   market: string
   interval: '15m' | '30m' | '1h' | '4h'
-  params: { fast: number; slow: number; rsi_period: number; rsi_max: string; stop_loss_pct: string; take_profit_pct: string }
+  params: {
+    fast: number
+    slow: number
+    rsi_period: number
+    rsi_max: string
+    stop_loss_pct: string
+    take_profit_pct: string
+    trend_period: number | null
+  }
   budget_krw: string
   daily_loss_limit_pct: string
   fee_rate: string
@@ -184,6 +193,23 @@ export interface TraderView {
   trades: TraderTrade[]
 }
 
+export interface OptimizeSummary {
+  return_pct: number
+  buy_hold_pct: number
+  max_drawdown_pct: number
+  trade_count: number
+  win_rate_pct: number
+  fees_krw: number
+}
+
+export interface OptimizeResult {
+  tested: number
+  train_from: string
+  test_from: string
+  to: string
+  picks: { params: BacktestParams; train: OptimizeSummary; test: OptimizeSummary }[]
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -208,6 +234,8 @@ export const api = {
     request<Candle[]>(`/api/candles?market=${market}&interval=${interval}&count=200`),
   backtest: (req: BacktestRequest) =>
     request<BacktestResult>('/api/backtest', { method: 'POST', body: JSON.stringify(req) }),
+  optimize: (req: Omit<BacktestRequest, 'params'>) =>
+    request<OptimizeResult>('/api/backtest/optimize', { method: 'POST', body: JSON.stringify(req) }),
   analysis: () => request<Analysis>('/api/analysis'),
   getTrader: () => request<TraderView>('/api/strategies/trader'),
   putTrader: (cfg: TraderConfig) =>

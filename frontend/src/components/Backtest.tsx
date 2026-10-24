@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, type UTCTimestamp } from 'lightweight-charts'
-import { api, type BacktestRequest, type BacktestResult, type Market } from '../api'
+import {
+  api,
+  type BacktestParams,
+  type BacktestRequest,
+  type BacktestResult,
+  type Market,
+  type OptimizeResult,
+} from '../api'
 import { formatKrw, formatKst, trendClass } from '../format'
 
 const INTERVALS = [
@@ -15,7 +22,7 @@ const DEFAULT: BacktestRequest = {
   market: 'KRW-BTC',
   interval: '1h',
   candles: 1000,
-  params: { fast: 9, slow: 26, rsi_period: 14, rsi_max: 70, stop_loss_pct: 2, take_profit_pct: 4 },
+  params: { fast: 9, slow: 26, rsi_period: 14, rsi_max: 70, stop_loss_pct: 2, take_profit_pct: 4, trend_period: null },
   costs: { fee_rate: 0.0025, slippage_pct: 0.05, initial_krw: 100000 },
 }
 
@@ -70,20 +77,52 @@ export function Backtest({ markets }: { markets: Market[] }) {
   const [result, setResult] = useState<BacktestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [opt, setOpt] = useState<OptimizeResult | null>(null)
+  const [optimizing, setOptimizing] = useState(false)
 
-  const setParam = (k: keyof BacktestRequest['params'], v: number) => setReq({ ...req, params: { ...req.params, [k]: v } })
+  const setParam = (k: keyof BacktestRequest['params'], v: number) =>
+    setReq({ ...req, params: { ...req.params, [k]: v } })
   const setCost = (k: keyof BacktestRequest['costs'], v: number) => setReq({ ...req, costs: { ...req.costs, [k]: v } })
 
-  async function run() {
+  async function run(next: BacktestRequest = req) {
     setRunning(true)
     setError(null)
     try {
-      setResult(await api.backtest(req))
+      setResult(await api.backtest(next))
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setRunning(false)
     }
+  }
+
+  async function runOptimize() {
+    setOptimizing(true)
+    setError(null)
+    try {
+      setOpt(await api.optimize({ market: req.market, interval: req.interval, candles: req.candles, costs: req.costs }))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setOptimizing(false)
+    }
+  }
+
+  function apply(params: BacktestParams) {
+    // 서버는 소수 값을 문자열로 보내므로 숫자로 바꿔 폼에 넣는다
+    const next = {
+      ...req,
+      params: {
+        ...req.params,
+        fast: Number(params.fast),
+        slow: Number(params.slow),
+        stop_loss_pct: Number(params.stop_loss_pct),
+        take_profit_pct: Number(params.take_profit_pct),
+        trend_period: params.trend_period,
+      },
+    }
+    setReq(next)
+    run(next)
   }
 
   const beatsHold = result && result.return_pct > result.buy_hold_pct
@@ -105,11 +144,13 @@ export function Backtest({ markets }: { markets: Market[] }) {
           <label>
             코인
             <select value={req.market} onChange={(e) => setReq({ ...req, market: e.target.value })}>
-              {(markets.length ? markets : [{ code: 'KRW-BTC', korean_name: '비트코인', english_name: '' }]).map((m) => (
-                <option key={m.code} value={m.code}>
-                  {m.korean_name} ({m.code.replace('KRW-', '')})
-                </option>
-              ))}
+              {(markets.length ? markets : [{ code: 'KRW-BTC', korean_name: '비트코인', english_name: '' }]).map(
+                (m) => (
+                  <option key={m.code} value={m.code}>
+                    {m.korean_name} ({m.code.replace('KRW-', '')})
+                  </option>
+                ),
+              )}
             </select>
           </label>
           <label>
@@ -122,13 +163,66 @@ export function Backtest({ markets }: { markets: Market[] }) {
               ))}
             </select>
           </label>
-          <NumberField label="기간 (봉 개수, 최대 3000)" value={req.candles} step={50} min={50} onChange={(v) => setReq({ ...req, candles: v })} />
-          <NumberField label="시작 금액 (원)" value={req.costs.initial_krw} step={10000} min={10000} onChange={(v) => setCost('initial_krw', v)} />
-          <NumberField label="짧은 이동평균 (봉)" value={req.params.fast} min={2} onChange={(v) => setParam('fast', v)} />
+          <NumberField
+            label="기간 (봉 개수, 최대 3000)"
+            value={req.candles}
+            step={50}
+            min={50}
+            onChange={(v) => setReq({ ...req, candles: v })}
+          />
+          <NumberField
+            label="시작 금액 (원)"
+            value={req.costs.initial_krw}
+            step={10000}
+            min={10000}
+            onChange={(v) => setCost('initial_krw', v)}
+          />
+          <NumberField
+            label="짧은 이동평균 (봉)"
+            value={req.params.fast}
+            min={2}
+            onChange={(v) => setParam('fast', v)}
+          />
           <NumberField label="긴 이동평균 (봉)" value={req.params.slow} min={3} onChange={(v) => setParam('slow', v)} />
-          <NumberField label="RSI 상한 (이보다 높으면 진입 안 함)" value={req.params.rsi_max} min={1} onChange={(v) => setParam('rsi_max', v)} />
-          <NumberField label="손절 (%)" value={req.params.stop_loss_pct} step={0.1} min={0.1} onChange={(v) => setParam('stop_loss_pct', v)} />
-          <NumberField label="익절 (%)" value={req.params.take_profit_pct} step={0.1} min={0.1} onChange={(v) => setParam('take_profit_pct', v)} />
+          <NumberField
+            label="RSI 상한 (이보다 높으면 진입 안 함)"
+            value={req.params.rsi_max}
+            min={1}
+            onChange={(v) => setParam('rsi_max', v)}
+          />
+          <NumberField
+            label="손절 (%)"
+            value={req.params.stop_loss_pct}
+            step={0.1}
+            min={0.1}
+            onChange={(v) => setParam('stop_loss_pct', v)}
+          />
+          <NumberField
+            label="익절 (%)"
+            value={req.params.take_profit_pct}
+            step={0.1}
+            min={0.1}
+            onChange={(v) => setParam('take_profit_pct', v)}
+          />
+          <label>
+            추세 필터 (큰 흐름이 오를 때만 매수)
+            <select
+              value={req.params.trend_period ?? ''}
+              onChange={(e) =>
+                setReq({
+                  ...req,
+                  params: { ...req.params, trend_period: e.target.value ? Number(e.target.value) : null },
+                })
+              }
+            >
+              <option value="">끔</option>
+              {[50, 100, 200].map((n) => (
+                <option key={n} value={n}>
+                  {n}봉 이동평균 위에서만
+                </option>
+              ))}
+            </select>
+          </label>
           <NumberField
             label="수수료율 (%)"
             value={Number((req.costs.fee_rate * 100).toFixed(4))}
@@ -136,15 +230,74 @@ export function Backtest({ markets }: { markets: Market[] }) {
             min={0}
             onChange={(v) => setCost('fee_rate', v / 100)}
           />
-          <NumberField label="슬리피지 (%)" value={req.costs.slippage_pct} step={0.01} min={0} onChange={(v) => setCost('slippage_pct', v)} />
+          <NumberField
+            label="슬리피지 (%)"
+            value={req.costs.slippage_pct}
+            step={0.01}
+            min={0}
+            onChange={(v) => setCost('slippage_pct', v)}
+          />
           <div className="form-actions">
-            <button type="submit" disabled={running}>
+            <button type="submit" disabled={running || optimizing}>
               {running ? '계산 중…' : '백테스트 실행'}
+            </button>
+            <button type="button" className="secondary" onClick={runOptimize} disabled={running || optimizing}>
+              {optimizing ? '수백 가지 설정 계산 중…' : '자동 최적화'}
             </button>
             {error && <span className="error">{error}</span>}
           </div>
         </form>
       </section>
+
+      {opt && (
+        <section className="card" style={{ marginTop: 16 }}>
+          <div className="card-head">
+            <h2>자동 최적화 결과</h2>
+            <span className="muted">
+              {opt.tested}가지 설정 비교 · 고른 기간 {formatKst(opt.train_from)}~ · 검증 기간 {formatKst(opt.test_from)}
+              ~
+            </span>
+          </div>
+          <p className="summary">
+            앞 70% 기간에서 수익이 가장 좋았던 설정을, 고를 때 쓰지 않은 뒤 30% 기간에 다시 돌린 결과예요. 검증
+            기간에서도 수익이 나고 "그냥 보유"보다 나아야 믿을 만해요.
+          </p>
+          <table className="ticker-table">
+            <thead>
+              <tr>
+                <th>설정</th>
+                <th className="num">고른 기간</th>
+                <th className="num">검증 기간</th>
+                <th className="num hide-sm">검증 · 보유</th>
+                <th className="num hide-sm">검증 거래</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {opt.picks.map((pk, i) => (
+                <tr key={i}>
+                  <td>
+                    {pk.params.fast}/{pk.params.slow}봉
+                    {pk.params.trend_period ? ` · 추세 ${pk.params.trend_period}` : ''} · 손절{' '}
+                    {Number(pk.params.stop_loss_pct)}% · 익절 {Number(pk.params.take_profit_pct)}%
+                  </td>
+                  <td className={`num ${trendClass(pk.train.return_pct)}`}>{pct(pk.train.return_pct)}</td>
+                  <td className={`num ${trendClass(pk.test.return_pct)}`}>{pct(pk.test.return_pct)}</td>
+                  <td className="num hide-sm">{pct(pk.test.buy_hold_pct)}</td>
+                  <td className="num hide-sm">
+                    {pk.test.trade_count}회 · {pk.test.win_rate_pct.toFixed(0)}%
+                  </td>
+                  <td className="num">
+                    <button className="link" onClick={() => apply(pk.params)} disabled={running}>
+                      적용
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       {result && (
         <>

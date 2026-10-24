@@ -72,6 +72,8 @@ main { flex: 1; padding: 24px; max-width: 1200px; }
   padding: 10px 18px; border: 0; border-radius: 8px; background: var(--accent); color: #111; font-weight: 600; cursor: pointer;
 }
 .form-actions button:disabled { opacity: 0.6; }
+.form-actions button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button.link { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0; }
 .switch { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
 .runs { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
