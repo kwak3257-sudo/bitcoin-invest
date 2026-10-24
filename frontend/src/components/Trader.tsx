@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { api, withTelegramCode, type Market, type TraderConfig, type TraderView } from '../api'
-import { formatKrw, formatKst, trendClass } from '../format'
+import { api, withTelegramCode, type Market, type RecommendRow, type TraderConfig, type TraderView } from '../api'
+import { describeParams, formatKrw, formatKst, trendClass } from '../format'
 
 const REFRESH_MS = 5000
 const INTERVALS = [
@@ -31,6 +31,8 @@ export function Trader({ markets }: { markets: Market[] }) {
   const [draft, setDraft] = useState<TraderConfig | null>(null)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [rows, setRows] = useState<RecommendRow[] | null>(null)
+  const [finding, setFinding] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -73,6 +75,31 @@ export function Trader({ markets }: { markets: Market[] }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function findBest() {
+    if (!draft) return
+    setFinding(true)
+    setMessage(null)
+    try {
+      setRows((await api.recommend(draft.market, draft.fee_rate)).rows)
+    } catch (e) {
+      setMessage({ ok: false, text: (e as Error).message })
+    } finally {
+      setFinding(false)
+    }
+  }
+
+  function applyPaper(row: RecommendRow) {
+    if (!draft) return
+    // 추천 설정은 언제나 모의투자로 먼저 넣는다. 실거래는 사용자가 직접 바꾼다
+    save({
+      ...draft,
+      mode: 'paper',
+      enabled: true,
+      interval: row.interval,
+      params: { ...draft.params, ...(row.params as unknown as TraderConfig['params']) },
+    })
   }
 
   async function emergencyStop() {
@@ -148,6 +175,55 @@ export function Trader({ markets }: { markets: Market[] }) {
         />
         <Stat label="낸 수수료" value={formatKrw(view.fees_krw)} sub="매수·매도 합계" />
       </div>
+
+      <section className="card" style={{ marginBottom: 16 }}>
+        <div className="card-head">
+          <h2>전략 자동 찾기</h2>
+          <button className="link" onClick={findBest} disabled={finding || busy}>
+            {finding ? '두 전략 × 4시간봉·일봉 계산 중… (1분 정도)' : rows ? '다시 찾기' : '찾기 시작'}
+          </button>
+        </div>
+        <p className="summary">
+          이동평균 교차와 변동성 돌파를 4시간봉·일봉 과거 3000개 봉으로 수백 가지씩 돌려, 앞 70% 기간에서 고른 설정을 뒤
+          30% 기간에서 검증한 순서로 보여 줘요. 현재 수수료율 {(Number(draft.fee_rate) * 100).toFixed(2)}%로 계산해요.
+        </p>
+        {rows && (
+          <table className="ticker-table">
+            <thead>
+              <tr>
+                <th>봉</th>
+                <th>설정</th>
+                <th className="num">검증 기간</th>
+                <th className="num hide-sm">그냥 보유</th>
+                <th className="num hide-sm">거래</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 8).map((r, i) => (
+                <tr key={i}>
+                  <td>{r.interval === '1d' ? '일봉' : '4시간봉'}</td>
+                  <td>{describeParams(r.params)}</td>
+                  <td className={`num ${trendClass(r.test.return_pct)}`}>
+                    {r.test.return_pct > 0 ? '+' : ''}
+                    {r.test.return_pct.toFixed(2)}%
+                  </td>
+                  <td className="num hide-sm">
+                    {r.test.buy_hold_pct > 0 ? '+' : ''}
+                    {r.test.buy_hold_pct.toFixed(2)}%
+                  </td>
+                  <td className="num hide-sm">{r.test.trade_count}회</td>
+                  <td className="num">
+                    <button className="link" onClick={() => applyPaper(r)} disabled={busy}>
+                      모의투자에 적용
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       <section className="card">
         <div className="card-head">

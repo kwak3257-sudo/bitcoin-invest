@@ -208,6 +208,29 @@ async def backtest_optimize(req: OptimizeRequest):
         raise HTTPException(400, str(exc)) from exc
 
 
+class RecommendRequest(BaseModel):
+    market: str = "KRW-BTC"
+    costs: BacktestCosts = BacktestCosts()
+
+
+@app.post("/api/strategies/recommend")
+async def recommend(req: RecommendRequest):
+    """두 전략 × 4시간봉·일봉을 모두 최적화해서, 검증 기간 성과 순으로 보여 준다."""
+    rows = []
+    for interval in ("4h", "1d"):
+        candles = await app.state.exchange.candle_history(req.market, interval, 3000)
+        for strategy in ("ma_cross", "breakout"):
+            try:
+                out = await asyncio.to_thread(optimize, candles, req.costs, strategy)
+            except ValueError:
+                continue
+            for pick in out["picks"]:
+                rows.append({"interval": interval, "test_from": out["test_from"], **pick})
+    # 검증 기간 수익 순. 검증 기간에 거래가 없던 설정은 판단 근거가 없어 뒤로 보낸다
+    rows.sort(key=lambda r: (r["test"]["trade_count"] > 0, r["test"]["return_pct"]), reverse=True)
+    return {"market": req.market, "rows": rows}
+
+
 async def _trader_view(state) -> dict:
     cfg = state.config
     price = None

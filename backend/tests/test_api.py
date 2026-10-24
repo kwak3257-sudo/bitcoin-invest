@@ -137,3 +137,39 @@ def test_live_settings_need_telegram_code(tmp_path, monkeypatch):
         assert r.status_code == 200 and r.json()["config"]["mode"] == "live"
         # 끄는 것은 인증 없이 바로 된다
         assert client.put("/api/strategies/dca", json={**cfg, "krw_amount": "90000", "enabled": False}).status_code == 200
+
+
+def test_recommend_ranks_by_test_return(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from decimal import Decimal
+
+    from app import backtest
+    from app.exchanges.base import Candle
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(backtest, "GRID", {
+        "fast": [3], "slow": [10], "trend_period": [None], "stop_loss_pct": [2], "take_profit_pct": [4, 6],
+    })
+    monkeypatch.setattr(backtest, "BREAKOUT_GRID", {"k": ["0.5"], "trend_period": [None], "stop_loss_pct": [2]})
+    from app.main import app
+
+    class Fake:
+        async def candle_history(self, market, interval, total):
+            import math
+            out, p = [], 100.0
+            for i in range(400):
+                o = p
+                p = 100 + 10 * math.sin(i / 7)
+                out.append(Candle(market, datetime(2026, 1, 1) + timedelta(hours=i), Decimal(o), Decimal(max(o, p) + 1),
+                                  Decimal(min(o, p) - 1), Decimal(p), Decimal(1)))
+            return out
+
+        async def close(self):
+            pass
+
+    with TestClient(app) as client:
+        app.state.exchange = Fake()
+        rows = client.post("/api/strategies/recommend", json={}).json()["rows"]
+        assert {r["interval"] for r in rows} == {"4h", "1d"}
+        traded = [r for r in rows if r["test"]["trade_count"] > 0]
+        assert [r["test"]["return_pct"] for r in traded] == sorted((r["test"]["return_pct"] for r in traded), reverse=True)

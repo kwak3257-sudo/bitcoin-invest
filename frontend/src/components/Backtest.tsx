@@ -8,7 +8,7 @@ import {
   type Market,
   type OptimizeResult,
 } from '../api'
-import { formatKrw, formatKst, trendClass } from '../format'
+import { describeParams, formatKrw, formatKst, trendClass } from '../format'
 
 const INTERVALS = [
   { value: '15m', label: '15분봉' },
@@ -34,13 +34,6 @@ const DEFAULT: BacktestRequest = {
     k: 0.5,
   },
   costs: { fee_rate: 0.0025, slippage_pct: 0.05, initial_krw: 100000 },
-}
-
-function describe(p: BacktestParams) {
-  const trend = p.trend_period ? ` · 추세 ${p.trend_period}` : ''
-  const stop = Number(p.stop_loss_pct) >= 50 ? '손절 없음' : `손절 ${Number(p.stop_loss_pct)}%`
-  if (p.strategy === 'breakout') return `돌파 k ${Number(p.k)}${trend} · ${stop}`
-  return `${p.fast}/${p.slow}봉${trend} · ${stop} · 익절 ${Number(p.take_profit_pct)}%`
 }
 
 const pct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
@@ -338,7 +331,7 @@ export function Backtest({ markets }: { markets: Market[] }) {
             <tbody>
               {opt.picks.map((pk, i) => (
                 <tr key={i}>
-                  <td>{describe(pk.params)}</td>
+                  <td>{describeParams(pk.params)}</td>
                   <td className={`num ${trendClass(pk.train.return_pct)}`}>{pct(pk.train.return_pct)}</td>
                   <td className={`num ${trendClass(pk.test.return_pct)}`}>{pct(pk.test.return_pct)}</td>
                   <td className="num hide-sm">{pct(pk.test.buy_hold_pct)}</td>

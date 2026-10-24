@@ -223,6 +223,14 @@ export class ApiError extends Error {
   }
 }
 
+export interface RecommendRow {
+  interval: '4h' | '1d'
+  test_from: string
+  params: BacktestParams
+  train: OptimizeSummary
+  test: OptimizeSummary
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -272,6 +280,11 @@ export const api = {
     request<BacktestResult>('/api/backtest', { method: 'POST', body: JSON.stringify(req) }),
   optimize: (req: Omit<BacktestRequest, 'params'> & { strategy: BacktestParams['strategy'] }) =>
     request<OptimizeResult>('/api/backtest/optimize', { method: 'POST', body: JSON.stringify(req) }),
+  recommend: (market: string, fee_rate: string) =>
+    request<{ market: string; rows: RecommendRow[] }>('/api/strategies/recommend', {
+      method: 'POST',
+      body: JSON.stringify({ market, costs: { fee_rate } }),
+    }),
   analysis: () => request<Analysis>('/api/analysis'),
   getTrader: () => request<TraderView>('/api/strategies/trader'),
   putTrader: (cfg: TraderConfig, code?: string) =>
