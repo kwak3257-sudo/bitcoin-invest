@@ -87,6 +87,53 @@ export interface Analysis {
   trades: DcaRun[]
 }
 
+export interface BacktestParams {
+  fast: number
+  slow: number
+  rsi_period: number
+  rsi_max: number
+  stop_loss_pct: number
+  take_profit_pct: number
+}
+
+export interface BacktestRequest {
+  market: string
+  interval: string
+  candles: number
+  params: BacktestParams
+  costs: { fee_rate: number; slippage_pct: number; initial_krw: number }
+}
+
+export interface BacktestTrade {
+  entry_time: string
+  entry_price: number
+  exit_time: string | null
+  exit_price: number | null
+  reason: string
+  pnl_krw: number
+  pnl_pct: number
+  fees_krw: number
+}
+
+export interface BacktestResult {
+  market: string
+  interval: string
+  from: string
+  to: string
+  candle_count: number
+  initial_krw: number
+  final_krw: number
+  return_pct: number
+  buy_hold_pct: number
+  max_drawdown_pct: number
+  trade_count: number
+  win_rate_pct: number
+  fees_krw: number
+  exposure_pct: number
+  trades: BacktestTrade[]
+  equity: { time: string; equity: number; buy_hold: number }[]
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -109,6 +156,8 @@ export const api = {
     request<Ticker[]>(`/api/tickers?markets=${encodeURIComponent(markets.join(','))}`),
   candles: (market: string, interval: string) =>
     request<Candle[]>(`/api/candles?market=${market}&interval=${interval}&count=200`),
+  backtest: (req: BacktestRequest) =>
+    request<BacktestResult>('/api/backtest', { method: 'POST', body: JSON.stringify(req) }),
   analysis: () => request<Analysis>('/api/analysis'),
   getDca: () => request<DcaView>('/api/strategies/dca'),
   putDca: (cfg: DcaConfig) =>

@@ -129,11 +129,15 @@ class BithumbExchange:
             for r in rows
         ]
 
-    async def candles(self, market: str, interval: str, count: int = 200) -> list[Candle]:
+    async def candles(self, market: str, interval: str, count: int = 200, to: datetime | None = None) -> list[Candle]:
+        """최근 캔들 최대 200개. to를 주면 그 시각 이전 캔들을 준다."""
         path = CANDLE_PATHS.get(interval)
         if path is None:
             raise ExchangeError(f"지원하지 않는 캔들 간격입니다: {interval}")
-        rows = await self._request("GET", path, params={"market": market, "count": min(count, 200)})
+        params: dict[str, Any] = {"market": market, "count": min(count, 200)}
+        if to is not None:
+            params["to"] = to.strftime("%Y-%m-%d %H:%M:%S")  # KST 기준 시각
+        rows = await self._request("GET", path, params=params)
         candles = [
             Candle(
                 market=r["market"],
@@ -148,6 +152,19 @@ class BithumbExchange:
         ]
         # 빗썸은 최신순으로 주므로 차트용으로 시간순 정렬
         return sorted(candles, key=lambda c: c.time_kst)
+
+    async def candle_history(self, market: str, interval: str, total: int) -> list[Candle]:
+        """200개씩 거슬러 올라가며 최대 total개를 모은다 (백테스트용)."""
+        out: list[Candle] = []
+        to: datetime | None = None
+        while len(out) < total:
+            batch = await self.candles(market, interval, min(200, total - len(out)), to=to)
+            batch = [c for c in batch if not out or c.time_kst < out[0].time_kst]
+            if not batch:
+                break
+            out = batch + out
+            to = batch[0].time_kst
+        return out
 
     # ---- 개인 API ----
 
