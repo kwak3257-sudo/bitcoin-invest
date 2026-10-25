@@ -9,7 +9,7 @@ import asyncio
 import logging
 from datetime import datetime
 
-from . import config, notify
+from . import bot, config, notify
 from .exchanges.bithumb import BithumbExchange
 from .store import DcaStore, TraderStore
 from .strategies import trader
@@ -59,6 +59,7 @@ async def main() -> None:
     log.info("매매 엔진 시작 (확인 주기 %s초, 텔레그램 알림 %s)", config.ENGINE_TICK_SECONDS,
              "켜짐" if notify.enabled() else "꺼짐")
     last_error = None
+    commands = asyncio.create_task(bot.poll(trader_store, exchange))  # 휴대폰에서 /상태, /정지
     try:
         while True:
             for job in (tick(store, exchange), trader_tick(trader_store, exchange)):
@@ -71,6 +72,7 @@ async def main() -> None:
                     last_error = str(exc)
             await asyncio.sleep(config.ENGINE_TICK_SECONDS)
     finally:
+        commands.cancel()
         await exchange.close()
 
 
