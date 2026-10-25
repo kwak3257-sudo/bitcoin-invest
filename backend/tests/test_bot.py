@@ -26,7 +26,7 @@ async def test_stop_command_requests_emergency_stop(tmp_path):
         s.config = TraderConfig(enabled=True)
     reply = await bot.handle("/정지", store, FakeExchange())
     assert "긴급 정지" in reply and store.load().stop_requested
-    assert "상태" in await bot.handle("hi", store, FakeExchange())
+    assert "언제 사" in await bot.handle("hi", store, FakeExchange())
     assert "단기 매매" in await bot.handle("/상태", store, FakeExchange())
 
 
@@ -53,3 +53,14 @@ def test_buy_price_makes_the_next_bar_a_golden_cross():
     x = buy_price(closes, p)
     assert signals(closes + [x + 1], p)[-1] == "buy"
     assert signals(closes + [x - 1], p)[-1] != "buy"
+
+
+def test_intents_understand_casual_korean():
+    assert bot.intent("요즘 어때?") == "status"
+    assert bot.intent("수익 얼마야") == "status"
+    assert bot.intent("언제 사?") == "analysis"
+    assert bot.intent("농담 하나 해줘") == "joke"
+    assert bot.intent("잃으면 혼나") == "worry"
+    assert bot.intent("정지") == "stop"
+    assert bot.intent("정지하면 어떻게 돼?") != "stop"  # 정지는 딱 그 말일 때만
+    assert bot.intent("날씨 어떠니") == "unknown"

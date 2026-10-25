@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime
 from decimal import Decimal
 
@@ -125,17 +126,75 @@ async def briefing(store: TraderStore, exchange) -> str:
     return text
 
 
+JOKES = [
+    "비트코인한테 기분이 어떠냐고 물어봤더니 '오르락내리락해'래요. 😅",
+    "제 취미는 차트 보기, 특기는 기다리기예요. 사실 둘이 같은 거예요.",
+    "떨어질 때 안 사는 게 제 자랑이에요. 참을성 하나는 사람보다 나아요. 😎",
+    "코인 시장은 롤러코스터래요. 저는 안전벨트(손절 3%) 꼭 매고 타요.",
+    "\"존버\"는 제 사전에 없어요. 규칙대로 사고 규칙대로 팔아요. 🤖",
+]
+
+# (키워드들, 답 종류). 위에서부터 먼저 맞는 것으로 답한다
+INTENTS: list[tuple[tuple[str, ...], str]] = [
+    (("언제 사", "언제사", "매수 언제", "언제 매수", "살 거", "살거", "안 사", "안사", "왜 안"), "analysis"),
+    (("상태", "어때", "수익", "얼마", "잘 되", "잘되", "진행", "현황", "벌었", "잃었", "손익", "잔고"), "status"),
+    (("농담", "웃겨", "심심", "재밌", "재미", "개그", "ㅋㅋ"), "joke"),
+    (("혼나", "혼날", "잃으면", "망하", "무서", "걱정"), "worry"),
+    (("고마", "감사", "수고", "잘했", "최고", "굿", "좋아"), "thanks"),
+    (("안녕", "하이", "ㅎㅇ", "hello", "hi", "/start", "반가"), "hello"),
+    (("뭐해", "뭐 해", "머해", "머 해", "일해", "자니", "살아"), "alive"),
+]
+
+
+def intent(text: str) -> str:
+    t = text.strip().lower()
+    # 정지는 오해가 없게 딱 그 말만 보냈을 때만 받는다 ("정지하면 어떻게 돼?"로는 멈추지 않는다)
+    if t in ("/정지", "정지", "/stop", "긴급 정지", "긴급정지"):
+        return "stop"
+    if t in ("/상태", "/status"):
+        return "status"
+    if t in ("/help", "/도움", "도움말", "명령어"):
+        return "help"
+    for words, name in INTENTS:
+        if any(w in t for w in words):
+            return name
+    return "unknown"
+
+
 async def handle(text: str, store: TraderStore, exchange) -> str:
-    cmd = text.strip().split()[0].lower() if text.strip() else ""
-    if cmd in ("/상태", "상태", "/status"):
+    kind = intent(text)
+    if kind == "status":
         return (await briefing(store, exchange)).replace("☀️ 오늘의 브리핑\n", "", 1)
-    if cmd in ("/정지", "정지", "/stop"):
+    if kind == "analysis":
+        try:
+            return await analysis_report(store, exchange)
+        except ExchangeError:
+            return "지금 빗썸 시세를 못 받아서 분석을 못 했어요. 잠시 뒤 다시 물어봐 주세요."
+    if kind == "stop":
         with store.edit() as state:
             if not state.config.enabled and state.position is None:
                 return "단기 매매는 이미 꺼져 있어요."
             state.stop_requested = True
         return "🛑 긴급 정지를 요청했어요. 보유 코인을 팔고 멈춘 뒤 다시 알려 드릴게요."
-    return HELP
+    if kind == "joke":
+        return random.choice(JOKES)
+    if kind == "worry":
+        limit = store.load().config
+        return (f"걱정 마세요. 하루에 운용 금액의 {limit.daily_loss_limit_pct}%"
+                f"({limit.budget_krw * limit.daily_loss_limit_pct / 100:,.0f}원) 넘게 잃으면 그날은 자동으로 멈추고, "
+                f"한 번 산 뒤 {limit.params.stop_loss_pct}% 떨어지면 바로 팔아요. 그래도 혼나면... 제가 반성문 쓸게요. 🙇")
+    if kind == "thanks":
+        return "천만에요! 저는 24시간 차트 보고 있을게요. 사고팔면 바로 알려 드릴게요. 💪"
+    if kind == "hello":
+        return "안녕하세요! 코인 투자 도우미예요. \"요즘 어때?\", \"언제 사?\"처럼 편하게 물어보세요. 🙂"
+    if kind == "alive":
+        state = store.load()
+        doing = "코인을 들고 팔 때를 보고" if state.position is not None else "살 때를 기다리며 시세를 보고"
+        return f"네, 일하는 중이에요! 30초마다 빗썸 시세를 확인하면서 {doing} 있어요. 👀"
+    if kind == "help":
+        return HELP
+    return ("음, 그건 제가 아직 잘 몰라요. 😅 이런 말은 알아들어요.\n"
+            "• 요즘 어때? / 수익 얼마야? → 현황\n• 언제 사? → 매수 조건 분석\n• 농담해 줘\n• /정지 → 긴급 정지")
 
 
 async def poll(store: TraderStore, exchange) -> None:
