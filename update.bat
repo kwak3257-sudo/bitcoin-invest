@@ -16,5 +16,7 @@ exit /b 0
 :error
 echo.
 echo 업데이트 중 오류가 났습니다. 이 창을 캡처해서 보내 주세요.
+echo 매매가 멈추지 않게 기존 버전으로 다시 켭니다.
+call start.bat
 pause
 exit /b 1
