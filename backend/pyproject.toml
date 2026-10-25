@@ -19,3 +19,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+# data/(설정·기록 저장 폴더)가 생겨도 설치 대상은 app 패키지뿐이다
+include = ["app*"]
