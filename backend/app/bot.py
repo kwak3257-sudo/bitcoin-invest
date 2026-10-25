@@ -17,11 +17,12 @@ from . import config, notify
 from .exchanges.base import ExchangeError
 from .store import TraderStore
 from .strategies.dca import KST
-from .strategies.trader import TraderState, position_value, today_pnl
+from .strategies.short_term import analysis
+from .strategies.trader import TraderState, _completed, position_value, today_pnl
 
 log = logging.getLogger("bot")
 
-HELP = "명령어\n/상태 - 수익률과 보유 현황\n/정지 - 단기 매매 긴급 정지 (보유 코인을 팔고 멈춤)"
+HELP = "명령어\n/상태 - 수익률, 보유 현황, 매수 조건 분석\n/정지 - 단기 매매 긴급 정지 (보유 코인을 팔고 멈춤)"
 
 
 def _krw(v: Decimal) -> str:
@@ -53,6 +54,55 @@ def status_text(state: TraderState, price: Decimal | None, now: datetime) -> str
     return "\n".join(lines)
 
 
+def _won(v: float | None) -> str:
+    return f"{v:,.0f}원" if v is not None else "계산 중"
+
+
+def analysis_text(state: TraderState, bars) -> str:
+    """마지막으로 끝난 봉을 보고 왜 사는지/안 사는지 설명한다."""
+    p = state.config.params
+    if len(bars) < p.warmup:
+        return "분석에 필요한 봉이 아직 모자라요."
+    closes = [float(c.close) for c in bars]
+    if p.strategy == "breakout":
+        last = bars[-1]
+        return (f"🔎 분석 (변동성 돌파, k={p.k})\n직전 봉 고가 {last.high:,.0f}원 · 저가 {last.low:,.0f}원\n"
+                f"이번 봉 시가에서 (고가-저가)×{p.k}만큼 오르면 삽니다.")
+    a = analysis(closes, p)
+    ok = lambda b: "✅" if b else "❌"  # noqa: E731
+    lines = [
+        f"🔎 분석 ({bars[-1].time_kst:%m/%d %H시} 봉 기준)",
+        f"종가 {_won(a['close'])} · RSI {a['rsi']:.0f}" if a["rsi"] is not None else f"종가 {_won(a['close'])}",
+        f"{ok(a['fast_above'])} {p.fast}봉 평균 {_won(a['fast'])} {'>' if a['fast_above'] else '<'} {p.slow}봉 평균 {_won(a['slow'])}",
+        f"{ok(a['rsi_ok'])} RSI {p.rsi_max} 아래 (너무 오른 상태가 아님)",
+    ]
+    if p.trend_period:
+        lines.append(f"{ok(a['trend_ok'])} 종가가 {p.trend_period}봉 평균 {_won(a['trend'])} 위 (큰 흐름 상승)")
+    if a["signal"] == "buy":
+        lines.append("➡️ 매수 신호")
+    elif a["signal"] == "sell" and state.position is not None:
+        lines.append("➡️ 매도 신호")
+    elif state.position is None:
+        if not a["fast_above"]:
+            lines.append(f"➡️ 기다림: {p.fast}봉 평균이 {p.slow}봉 평균을 아래에서 위로 뚫는 날 삽니다.")
+        else:
+            lines.append("➡️ 기다림: 이미 위에 있어서, 한 번 내려갔다 다시 뚫을 때 삽니다.")
+    else:
+        lines.append("➡️ 보유 유지: 평균이 꺾이거나 손절·익절가에 닿으면 팝니다.")
+    return "\n".join(lines)
+
+
+async def analysis_report(store: TraderStore, exchange) -> str:
+    state = store.load()
+    cfg = state.config
+    need = cfg.params.warmup + 50
+    if need > 200:
+        candles = await exchange.candle_history(cfg.market, cfg.interval, need)
+    else:
+        candles = await exchange.candles(cfg.market, cfg.interval, need)
+    return analysis_text(state, _completed(candles, cfg.interval, datetime.now(KST)))
+
+
 async def handle(text: str, store: TraderStore, exchange) -> str:
     cmd = text.strip().split()[0].lower() if text.strip() else ""
     if cmd in ("/상태", "상태", "/status"):
@@ -63,7 +113,12 @@ async def handle(text: str, store: TraderStore, exchange) -> str:
             price = ticker.price
         except ExchangeError:
             pass
-        return status_text(state, price, datetime.now(KST))
+        text = status_text(state, price, datetime.now(KST))
+        try:
+            text += "\n\n" + await analysis_report(store, exchange)
+        except ExchangeError:
+            pass
+        return text
     if cmd in ("/정지", "정지", "/stop"):
         with store.edit() as state:
             if not state.config.enabled and state.position is None:

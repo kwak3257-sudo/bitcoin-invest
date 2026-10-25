@@ -107,3 +107,21 @@ def signals(closes: list[float], p: ShortTermParams) -> list[str | None]:
         elif f[i - 1] >= s[i - 1] and f[i] < s[i]:
             out[i] = "sell"
     return out
+
+
+def analysis(closes: list[float], p: ShortTermParams) -> dict:
+    """마지막으로 끝난 봉 기준 이동평균 교차 판단 근거. 사람이 읽을 수 있게 알림에 쓴다."""
+    f, s, r = sma(closes, p.fast), sma(closes, p.slow), rsi(closes, p.rsi_period)
+    trend = sma(closes, p.trend_period)[-1] if p.trend_period else None
+    i = len(closes) - 1
+    return {
+        "close": closes[i],
+        "fast": f[i],
+        "slow": s[i],
+        "rsi": r[i],
+        "trend": trend,
+        "fast_above": f[i] is not None and s[i] is not None and f[i] > s[i],
+        "rsi_ok": r[i] is not None and r[i] < float(p.rsi_max),
+        "trend_ok": trend is None or closes[i] > trend,
+        "signal": signals(closes, p)[i],
+    }

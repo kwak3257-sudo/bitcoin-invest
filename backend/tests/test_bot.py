@@ -28,3 +28,18 @@ async def test_stop_command_requests_emergency_stop(tmp_path):
     assert "긴급 정지" in reply and store.load().stop_requested
     assert "상태" in await bot.handle("hi", store, FakeExchange())
     assert "단기 매매" in await bot.handle("/상태", store, FakeExchange())
+
+
+def test_analysis_explains_waiting_for_cross(tmp_path):
+    from app.strategies.short_term import ShortTermParams
+
+    from .test_trader import bars
+
+    store = TraderStore(tmp_path / "trader.json")
+    with store.edit() as s:
+        s.config = TraderConfig(enabled=True, params=ShortTermParams(fast=2, slow=3, rsi_period=2, rsi_max=100,
+                                                                     trend_period=3))
+    text = bot.analysis_text(store.load(), bars((100, 100, 100, 110, 80)))
+    assert "🔎 분석" in text and "❌ 2봉 평균" in text and "기다림" in text
+    golden = bot.analysis_text(store.load(), bars((100, 100, 100, 90, 120)))
+    assert "매수 신호" in golden

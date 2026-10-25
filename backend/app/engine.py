@@ -46,6 +46,11 @@ async def trader_tick(store: TraderStore, exchange) -> None:
     if halt:
         log.warning(halt)
         await notify.send(f"{tag} {halt}")
+    if state.config.enabled and state.last_bar != before.last_bar and before.last_bar is not None:
+        try:  # 봉이 끝날 때마다(일봉이면 하루 한 번) 판단 근거를 보낸다
+            await notify.send(f"{tag} " + await bot.analysis_report(store, exchange))
+        except Exception as exc:
+            log.warning("분석 알림 실패: %s", exc)
     if stopped:
         log.warning("단기 매매를 긴급 정지했습니다.")
         await notify.send(f"{tag} 단기 매매를 긴급 정지했습니다.")
