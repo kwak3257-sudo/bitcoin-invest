@@ -85,6 +85,11 @@ def analysis_text(state: TraderState, bars) -> str:
     elif state.position is None:
         if not a["fast_above"]:
             lines.append(f"➡️ 기다림: {p.fast}봉 평균이 {p.slow}봉 평균을 아래에서 위로 뚫는 날 삽니다.")
+            if a["buy_above"]:
+                gap = (a["buy_above"] / a["close"] - 1) * 100
+                when = "내일" if state.config.interval == "1d" else "다음 봉"
+                lines.append(f"🎯 {when} 종가가 약 {_won(a['buy_above'])} 이상이면 매수 신호 (지금보다 {gap:+.1f}%)")
+                lines.append("   가격이 천천히 오르면 이 기준도 매일 내려와요.")
         else:
             lines.append("➡️ 기다림: 이미 위에 있어서, 한 번 내려갔다 다시 뚫을 때 삽니다.")
     else:
@@ -103,22 +108,27 @@ async def analysis_report(store: TraderStore, exchange) -> str:
     return analysis_text(state, _completed(candles, cfg.interval, datetime.now(KST)))
 
 
+async def briefing(store: TraderStore, exchange) -> str:
+    """아침 브리핑: 현황 + 분석."""
+    state = store.load()
+    price = None
+    try:
+        [ticker] = await exchange.tickers([state.config.market])
+        price = ticker.price
+    except ExchangeError:
+        pass
+    text = "☀️ 오늘의 브리핑\n" + status_text(state, price, datetime.now(KST))
+    try:
+        text += "\n\n" + await analysis_report(store, exchange)
+    except ExchangeError:
+        pass
+    return text
+
+
 async def handle(text: str, store: TraderStore, exchange) -> str:
     cmd = text.strip().split()[0].lower() if text.strip() else ""
     if cmd in ("/상태", "상태", "/status"):
-        state = store.load()
-        price = None
-        try:
-            [ticker] = await exchange.tickers([state.config.market])
-            price = ticker.price
-        except ExchangeError:
-            pass
-        text = status_text(state, price, datetime.now(KST))
-        try:
-            text += "\n\n" + await analysis_report(store, exchange)
-        except ExchangeError:
-            pass
-        return text
+        return (await briefing(store, exchange)).replace("☀️ 오늘의 브리핑\n", "", 1)
     if cmd in ("/정지", "정지", "/stop"):
         with store.edit() as state:
             if not state.config.enabled and state.position is None:

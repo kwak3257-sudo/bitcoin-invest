@@ -124,4 +124,23 @@ def analysis(closes: list[float], p: ShortTermParams) -> dict:
         "rsi_ok": r[i] is not None and r[i] < float(p.rsi_max),
         "trend_ok": trend is None or closes[i] > trend,
         "signal": signals(closes, p)[i],
+        "buy_above": buy_price(closes, p),
     }
+
+
+def buy_price(closes: list[float], p: ShortTermParams) -> float | None:
+    """다음 봉 종가가 이 값보다 높으면 짧은 평균이 긴 평균을 뚫고(교차) 추세 필터도 통과한다. 이미 위에 있으면 None.
+
+    짧은 평균 (A+x)/f > 긴 평균 (B+x)/s  ⇔  x > (f·B − s·A)/(s − f)
+    추세 (C+x)/t < x  ⇔  x > C/(t−1)       (A, B, C는 직전 f−1, s−1, t−1개 종가 합)
+    """
+    f, s = p.fast, p.slow
+    if len(closes) < max(s, p.trend_period or 0):
+        return None
+    if sum(closes[-f:]) / f > sum(closes[-s:]) / s:
+        return None  # 이미 위에 있으면 교차가 일어날 수 없다
+    a, b = sum(closes[len(closes) - (f - 1):]) if f > 1 else 0.0, sum(closes[len(closes) - (s - 1):])
+    need = (f * b - s * a) / (s - f)
+    if p.trend_period:
+        need = max(need, sum(closes[len(closes) - (p.trend_period - 1):]) / (p.trend_period - 1))
+    return need

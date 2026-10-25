@@ -16,6 +16,7 @@ from .strategies import trader
 from .strategies.dca import KST, run_if_due, take_profit_if_reached
 
 log = logging.getLogger("engine")
+BRIEFING_HOUR = 9  # 오전 9시
 
 
 async def tick(store: DcaStore, exchange) -> None:
@@ -66,6 +67,10 @@ async def main() -> None:
              "켜짐" if notify.enabled() else "꺼짐")
     last_error = None
     commands = asyncio.create_task(bot.poll(trader_store, exchange))  # 휴대폰에서 /상태, /정지
+    t = trader_store.load().config
+    await notify.send(f"🟢 매매 엔진이 켜졌어요. 단기 매매 {'실거래' if t.mode == 'live' else '모의투자'} · "
+                      f"{'켜짐' if t.enabled else '꺼짐'}. /상태 로 현황을 볼 수 있어요.")
+    briefed = None
     try:
         while True:
             for job in (tick(store, exchange), trader_tick(trader_store, exchange)):
@@ -76,6 +81,13 @@ async def main() -> None:
                     if str(exc) != last_error:  # 같은 오류는 한 번만 알린다
                         await notify.send(f"엔진 처리 중 오류: {exc}")
                     last_error = str(exc)
+            now = datetime.now(KST)
+            if now.hour == BRIEFING_HOUR and briefed != now.date() and trader_store.load().config.enabled:
+                briefed = now.date()  # 매일 아침 한 번 현황과 분석을 보낸다
+                try:
+                    await notify.send(await bot.briefing(trader_store, exchange))
+                except Exception as exc:
+                    log.warning("브리핑 실패: %s", exc)
             await asyncio.sleep(config.ENGINE_TICK_SECONDS)
     finally:
         commands.cancel()

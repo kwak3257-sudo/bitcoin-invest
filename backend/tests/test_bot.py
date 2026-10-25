@@ -43,3 +43,13 @@ def test_analysis_explains_waiting_for_cross(tmp_path):
     assert "🔎 분석" in text and "❌ 2봉 평균" in text and "기다림" in text
     golden = bot.analysis_text(store.load(), bars((100, 100, 100, 90, 120)))
     assert "매수 신호" in golden
+
+
+def test_buy_price_makes_the_next_bar_a_golden_cross():
+    from app.strategies.short_term import ShortTermParams, buy_price, signals
+
+    p = ShortTermParams(fast=2, slow=3, rsi_period=2, rsi_max=100, trend_period=3)
+    closes = [100.0, 100, 100, 110, 80]
+    x = buy_price(closes, p)
+    assert signals(closes + [x + 1], p)[-1] == "buy"
+    assert signals(closes + [x - 1], p)[-1] != "buy"
