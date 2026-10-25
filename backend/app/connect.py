@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 import sys
 import time
@@ -36,13 +37,19 @@ def clipboard() -> str:
         return ""
 
 
-def read_secret(label: str) -> str | None:
-    """복사해 둔 값을 읽는다. 건너뛰면 None."""
+TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{30,}")
+
+
+def read_secret(label: str, pattern: re.Pattern | None = None) -> str | None:
+    """복사해 둔 값을 읽는다. pattern이 있으면 긴 메시지를 통째로 복사해도 그 부분만 찾는다. 건너뛰면 None."""
     while True:
         typed = input(f"{label}을(를) 복사한 뒤 Enter (붙여 넣어도 됨, 건너뛰려면 s 입력 후 Enter): ").strip()
         if typed.lower() == "s":
             return None
         value = typed or clipboard()
+        if pattern is not None:
+            found = pattern.findall(value)
+            value = found[-1] if found else ""
         if value and " " not in value and len(value) >= 20:
             print(f"   읽었어요: {value[:4]}…{value[-4:]}")
             return value
@@ -106,8 +113,9 @@ def connect_bithumb() -> bool:
 
 def connect_telegram() -> bool:
     print("\n=== 2. 텔레그램 (알림과 인증번호) ===")
-    print("휴대폰 텔레그램에서 @BotFather 를 검색해 /newbot 을 보내고, 봇 이름을 두 번 정하면 토큰을 줍니다.")
-    token = read_secret("토큰")
+    print("텔레그램에서 @BotFather 에게 /token 을 보내고 내 봇을 고르면 토큰을 줍니다. 봇이 없으면 /newbot 으로 만드세요.")
+    print("토큰이 든 메시지를 통째로 복사해도 됩니다.")
+    token = read_secret("토큰", TOKEN_RE)
     if not token:
         print("텔레그램 연결을 건너뜁니다. 실거래는 텔레그램을 연결해야 켤 수 있어요.")
         return True
@@ -115,7 +123,8 @@ def connect_telegram() -> bool:
     with httpx.Client(timeout=15) as client:
         r = client.get(f"{api}/getMe")
         if r.status_code != 200 or not r.json().get("ok"):
-            print("토큰이 맞지 않습니다. BotFather가 준 토큰 전체를 다시 복사해 주세요.")
+            print("토큰이 맞지 않습니다. 예전 토큰일 수 있어요.")
+            print("BotFather에게 /token 을 보내고 봇을 고르면 지금 쓸 수 있는 토큰을 보여 줍니다. 그 메시지를 복사한 뒤 connect.bat을 다시 실행하세요.")
             return False
         name = r.json()["result"]["username"]
         since = time.time() - RECENT_SECONDS
