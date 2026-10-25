@@ -24,7 +24,8 @@ from .exchanges.bithumb import CANDLE_PATHS, BithumbExchange
 from .store import DcaStore, TraderStore
 from .strategies.dca import KST, WeeklyDcaConfig, next_run, position_from_runs, take_profit_price
 from .strategies.short_term import ShortTermParams
-from .strategies.trader import TraderConfig, daily_loss_limit_krw, position_value, today_pnl
+from .strategies.short_term import ShortTermParams
+from .strategies.trader import TraderConfig, daily_loss_limit_krw, held_market, position_value, today_pnl
 
 DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 
@@ -231,11 +232,44 @@ async def recommend(req: RecommendRequest):
     return {"market": req.market, "rows": rows}
 
 
+class ValidateRequest(BaseModel):
+    markets: list[str] = Field(min_length=1, max_length=10)
+    interval: Literal["4h", "1d"] = "1d"
+    params: ShortTermParams
+    costs: BacktestCosts = BacktestCosts()
+    train_ratio: float = Field(0.7, ge=0.5, le=0.9)
+
+
+@app.post("/api/strategies/validate")
+async def validate_markets(req: ValidateRequest):
+    """같은 설정을 코인마다 돌려 본다. 뒤 30%(검증 기간)에서 수수료를 빼고도 수익이 났는지가 기준이다."""
+    rows = []
+    for market in dict.fromkeys(req.markets):
+        try:
+            candles = await app.state.exchange.candle_history(market, req.interval, 3000)
+            split = int(len(candles) * req.train_ratio)
+            full = await asyncio.to_thread(run_backtest, candles, req.params, req.costs)
+            test = await asyncio.to_thread(run_backtest, candles, req.params, req.costs, split)
+        except (ExchangeError, ValueError) as exc:
+            rows.append({"market": market, "error": str(exc)})
+            continue
+        keys = ("return_pct", "buy_hold_pct", "max_drawdown_pct", "trade_count", "win_rate_pct", "fees_krw")
+        rows.append({
+            "market": market,
+            "from": candles[0].time_kst,
+            "test_from": candles[split].time_kst,
+            "full": {k: getattr(full, k) for k in keys},
+            "test": {k: getattr(test, k) for k in keys},
+            "passed": test.return_pct > 0 and full.return_pct > 0,
+        })
+    return {"rows": rows}
+
+
 async def _trader_view(state) -> dict:
     cfg = state.config
     price = None
     try:
-        [ticker] = await app.state.exchange.tickers([cfg.market])
+        [ticker] = await app.state.exchange.tickers([held_market(state)])
         price = ticker.price
     except ExchangeError:
         pass  # 시세를 못 받아도 설정과 기록은 보여 준다
@@ -251,6 +285,7 @@ async def _trader_view(state) -> dict:
     sells = [t for t in state.trades if t.ok and t.pnl_krw is not None]
     return {
         "config": cfg,
+        "held_market": held_market(state),
         "keys_ready": bool(config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY),
         "telegram_ready": notify.enabled(),
         "price": price,

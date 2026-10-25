@@ -141,6 +141,7 @@ export interface TraderConfig {
   enabled: boolean
   mode: 'paper' | 'live'
   market: string
+  watch: string[]
   interval: '15m' | '30m' | '1h' | '4h' | '1d'
   params: {
     fast: number
@@ -175,6 +176,7 @@ export interface TraderTrade {
 
 export interface TraderView {
   config: TraderConfig
+  held_market: string
   keys_ready: boolean
   telegram_ready: boolean
   price: string | null
@@ -229,6 +231,16 @@ export interface RecommendRow {
   params: BacktestParams
   train: OptimizeSummary
   test: OptimizeSummary
+}
+
+export interface ValidateRow {
+  market: string
+  error?: string
+  from?: string
+  test_from?: string
+  full?: OptimizeSummary
+  test?: OptimizeSummary
+  passed?: boolean
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -287,6 +299,11 @@ export const api = {
     }),
   analysis: () => request<Analysis>('/api/analysis'),
   getTrader: () => request<TraderView>('/api/strategies/trader'),
+  validate: (markets: string[], interval: string, params: TraderConfig['params'], fee_rate: string) =>
+    request<{ rows: ValidateRow[] }>('/api/strategies/validate', {
+      method: 'POST',
+      body: JSON.stringify({ markets, interval, params, costs: { fee_rate } }),
+    }),
   putTrader: (cfg: TraderConfig, code?: string) =>
     request<TraderView>(`/api/strategies/trader${codeQuery(code)}`, { method: 'PUT', body: JSON.stringify(cfg) }),
   stopTrader: () => request<TraderView>('/api/strategies/trader/stop', { method: 'POST' }),

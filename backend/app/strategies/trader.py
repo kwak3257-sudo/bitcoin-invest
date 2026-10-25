@@ -5,6 +5,8 @@
 - 운용 금액(budget_krw) 안에서만 산다. 실현 손익은 운용 금액에 더해지고 빠진다.
 - 오늘(KST) 손실이 한도를 넘으면 보유분을 팔고 다음 날 0시까지 멈춘다.
 - 긴급 정지를 누르면 보유분을 팔고 전략을 끈다.
+- 이동평균 교차는 여러 코인(market + watch)을 같은 규칙으로 보다가, 먼저 매수 신호가 온 코인 하나를 산다.
+  한 번에 하나만 들고, 판 뒤에 다시 모든 코인을 본다.
 기본값은 꺼짐, 모의투자(paper)다.
 """
 
@@ -29,6 +31,7 @@ class TraderConfig(BaseModel):
     enabled: bool = False
     mode: Literal["paper", "live"] = "paper"
     market: str = "KRW-BTC"
+    watch: list[str] = Field(default_factory=list, description="함께 볼 코인. 이동평균 교차에서만 쓴다")
     interval: Literal["15m", "30m", "1h", "4h", "1d"] = "1h"
     params: ShortTermParams = ShortTermParams()
     budget_krw: Decimal = Field(Decimal(100000), description="이 전략이 쓸 수 있는 최대 원화")
@@ -49,8 +52,25 @@ class TraderConfig(BaseModel):
             raise ValueError("원화(KRW) 마켓만 지원합니다. 예: KRW-BTC")
         return v
 
+    @field_validator("watch")
+    @classmethod
+    def _krw_watch(cls, v: list[str]) -> list[str]:
+        if any(not m.startswith("KRW-") for m in v):
+            raise ValueError("원화(KRW) 마켓만 지원합니다. 예: KRW-ETH")
+        if len(v) > 9:
+            raise ValueError("함께 볼 코인은 9개까지입니다.")
+        return v
+
+    @property
+    def markets(self) -> list[str]:
+        """신호를 볼 코인들. 변동성 돌파는 market 하나만 본다."""
+        if self.params.strategy == "breakout":
+            return [self.market]
+        return list(dict.fromkeys([self.market, *self.watch]))
+
 
 class OpenPosition(BaseModel):
+    market: str | None = None  # 예전 기록에는 없다. 없으면 config.market
     entry_at: datetime
     entry_price: Decimal
     volume: Decimal
@@ -77,7 +97,8 @@ class TraderState(BaseModel):
     config: TraderConfig = TraderConfig()
     position: OpenPosition | None = None
     trades: list[TraderTrade] = []
-    last_bar: datetime | None = None
+    last_bar: datetime | None = None  # 판단한 마지막 봉 (어느 코인이든 가장 최근)
+    last_bars: dict[str, datetime] = {}  # 코인별로 판단한 마지막 봉
     entry_bar: datetime | None = None  # 변동성 돌파: 이 봉에서 이미 샀으면 다시 사지 않는다
     halted_until: datetime | None = None
     halt_reason: str | None = None
@@ -105,6 +126,13 @@ class TraderState(BaseModel):
 
     def last_error_at(self) -> datetime | None:
         return max((t.at for t in self.trades if not t.ok), default=None)
+
+
+def held_market(state: TraderState) -> str:
+    """지금 들고 있는 코인. 들고 있지 않으면 기본 코인."""
+    if state.position is not None and state.position.market:
+        return state.position.market
+    return state.config.market
 
 
 def position_value(state: TraderState, price: Decimal) -> Decimal:
@@ -137,34 +165,36 @@ async def _coin_balance(exchange: Exchange, market: str) -> Decimal:
     return Decimal(0)
 
 
-async def _buy(state: TraderState, exchange: Exchange, price: Decimal, now: datetime, reason: str) -> TraderTrade:
+async def _buy(state: TraderState, exchange: Exchange, price: Decimal, now: datetime, reason: str,
+               market: str | None = None) -> TraderTrade:
     cfg = state.config
+    market = market or cfg.market
     # 수수료는 주문 금액 위에 붙는다고 보고, 수수료까지 장부 현금 안에 들어가게 주문한다
     krw = (state.cash_krw / (1 + cfg.fee_rate)).quantize(Decimal(1), rounding=ROUND_DOWN)
     if krw < MIN_ORDER_KRW:
-        return TraderTrade(at=now, market=cfg.market, side="buy", mode=cfg.mode, reason=reason, ok=False,
+        return TraderTrade(at=now, market=market, side="buy", mode=cfg.mode, reason=reason, ok=False,
                            message=f"남은 운용 금액({state.cash_krw:,.0f}원)이 최소 주문 금액보다 적습니다.")
     fee = (krw * cfg.fee_rate).quantize(Decimal("0.01"))
     volume = krw / price
     order_id = None
     try:
         if cfg.mode == "live":
-            before = await _coin_balance(exchange, cfg.market)
-            order = await exchange.buy_market(cfg.market, krw)
+            before = await _coin_balance(exchange, market)
+            order = await exchange.buy_market(market, krw)
             order_id = order.order_id
     except ExchangeError as exc:
-        return TraderTrade(at=now, market=cfg.market, side="buy", mode=cfg.mode, reason=reason, ok=False, message=str(exc))
+        return TraderTrade(at=now, market=market, side="buy", mode=cfg.mode, reason=reason, ok=False, message=str(exc))
     if cfg.mode == "live":
         # 시장가 체결 수량은 주문 응답에 없을 수 있어 잔고 변화로 확인한다. 확인이 안 되면 현재가로 추정한다
         try:
-            got = await _coin_balance(exchange, cfg.market) - before
+            got = await _coin_balance(exchange, market) - before
         except ExchangeError:
             got = Decimal(0)
         if got > 0:
             volume = got
             price = krw / volume
-    state.position = OpenPosition(entry_at=now, entry_price=price, volume=volume, cost_krw=krw + fee)
-    return TraderTrade(at=now, market=cfg.market, side="buy", mode=cfg.mode, reason=reason, price=price, volume=volume,
+    state.position = OpenPosition(market=market, entry_at=now, entry_price=price, volume=volume, cost_krw=krw + fee)
+    return TraderTrade(at=now, market=market, side="buy", mode=cfg.mode, reason=reason, price=price, volume=volume,
                        krw_amount=krw, fee_krw=fee, order_id=order_id,
                        message=f"{reason}: {price:,.0f}원에 {krw:,.0f}원어치 매수")
 
@@ -173,21 +203,22 @@ async def _sell(state: TraderState, exchange: Exchange, price: Decimal, now: dat
     cfg = state.config
     pos = state.position
     assert pos is not None
+    market = held_market(state)
     volume = pos.volume
     order_id = None
     try:
         if cfg.mode == "live":
             # 기록과 실제 잔고가 다를 수 있어, 실제 잔고 중 기록한 만큼까지만 판다
-            volume = min(volume, await _coin_balance(exchange, cfg.market))
-            order = await exchange.sell_market(cfg.market, volume)
+            volume = min(volume, await _coin_balance(exchange, market))
+            order = await exchange.sell_market(market, volume)
             order_id = order.order_id
     except ExchangeError as exc:
-        return TraderTrade(at=now, market=cfg.market, side="sell", mode=cfg.mode, reason=reason, ok=False, message=str(exc))
+        return TraderTrade(at=now, market=market, side="sell", mode=cfg.mode, reason=reason, ok=False, message=str(exc))
     proceeds = volume * price
     fee = (proceeds * cfg.fee_rate).quantize(Decimal("0.01"))
     pnl = proceeds - fee - pos.cost_krw
     state.position = None
-    return TraderTrade(at=now, market=cfg.market, side="sell", mode=cfg.mode, reason=reason, price=price, volume=volume,
+    return TraderTrade(at=now, market=market, side="sell", mode=cfg.mode, reason=reason, price=price, volume=volume,
                        krw_amount=proceeds, fee_krw=fee, pnl_krw=pnl, order_id=order_id,
                        message=f"{reason}: {price:,.0f}원에 매도, 손익 {pnl:+,.0f}원")
 
@@ -216,7 +247,7 @@ async def step(state: TraderState, exchange: Exchange, now: datetime) -> list[Tr
     if state.stop_requested:
         state.stop_requested = False
         if state.position is not None:
-            [ticker] = await exchange.tickers([cfg.market])
+            [ticker] = await exchange.tickers([held_market(state)])
             trade = await _sell(state, exchange, ticker.price, now, "긴급 정지")
             record(trade)
             if not trade.ok:
@@ -235,7 +266,7 @@ async def step(state: TraderState, exchange: Exchange, now: datetime) -> list[Tr
     if last_error is not None and now - last_error < ERROR_PAUSE:
         return done
 
-    [ticker] = await exchange.tickers([cfg.market])
+    [ticker] = await exchange.tickers([held_market(state)])
     price = ticker.price
 
     # 1) 손절·익절: 현재가 기준
@@ -266,26 +297,48 @@ async def step(state: TraderState, exchange: Exchange, now: datetime) -> list[Tr
         return done  # 이번에 이미 팔았으면 신호 확인은 다음 차례에
 
     # 3) 봉이 새로 끝났으면 신호 확인
+    if breakout:
+        bars, candles = await _bars(exchange, cfg, cfg.market, now)
+        if len(bars) >= cfg.params.warmup:
+            await _breakout(state, exchange, candles, bars, price, now, record)
+        return done
+    # 들고 있으면 그 코인의 매도 신호만, 없으면 모든 코인의 매수 신호를 본다
+    for market in ([held_market(state)] if state.position is not None else cfg.markets):
+        seen = state.last_bars.get(market) or (state.last_bar if market == cfg.market else None)
+        step_ = timedelta(minutes=INTERVAL_MINUTES[cfg.interval])
+        if seen is not None and seen + 2 * step_ > now.astimezone(KST).replace(tzinfo=None):
+            continue  # 다음 봉이 아직 안 끝났으면 캔들을 받을 필요도 없다
+        try:
+            bars, _ = await _bars(exchange, cfg, market, now)
+        except ExchangeError:
+            continue  # 한 코인 시세가 안 와도 나머지는 계속 본다
+        if len(bars) < cfg.params.warmup or bars[-1].time_kst == seen:
+            continue
+        state.last_bars[market] = bars[-1].time_kst
+        state.last_bar = max(state.last_bar or bars[-1].time_kst, bars[-1].time_kst)
+        sig = signals([float(c.close) for c in bars], cfg.params)[-1]
+        if sig == "buy" and state.position is None:
+            if market != held_market(state):
+                [t] = await exchange.tickers([market])
+                buy_price = t.price
+            else:
+                buy_price = price
+            name = market.split("-", 1)[1]
+            record(await _buy(state, exchange, buy_price, now, f"{name} 매수 신호" if len(cfg.markets) > 1 else "매수 신호",
+                              market))
+            break  # 한 번에 한 코인만 산다
+        if sig == "sell" and state.position is not None:
+            record(await _sell(state, exchange, price, now, "매도 신호"))
+    return done
+
+
+async def _bars(exchange: Exchange, cfg: TraderConfig, market: str, now: datetime):
     need = cfg.params.warmup + 50
     if need > 200:
-        candles = await exchange.candle_history(cfg.market, cfg.interval, need)
+        candles = await exchange.candle_history(market, cfg.interval, need)
     else:
-        candles = await exchange.candles(cfg.market, cfg.interval, need)
-    bars = _completed(candles, cfg.interval, now)
-    if len(bars) < cfg.params.warmup:
-        return done
-    if breakout:
-        await _breakout(state, exchange, candles, bars, price, now, record)
-        return done
-    if bars[-1].time_kst == state.last_bar:
-        return done
-    state.last_bar = bars[-1].time_kst
-    sig = signals([float(c.close) for c in bars], cfg.params)[-1]
-    if sig == "buy" and state.position is None:
-        record(await _buy(state, exchange, price, now, "매수 신호"))
-    elif sig == "sell" and state.position is not None:
-        record(await _sell(state, exchange, price, now, "매도 신호"))
-    return done
+        candles = await exchange.candles(market, cfg.interval, need)
+    return _completed(candles, cfg.interval, now), candles
 
 
 async def _breakout(state: TraderState, exchange: Exchange, candles, bars, price: Decimal, now: datetime, record) -> None:

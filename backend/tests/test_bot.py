@@ -64,3 +64,14 @@ def test_intents_understand_casual_korean():
     assert bot.intent("정지") == "stop"
     assert bot.intent("정지하면 어떻게 돼?") != "stop"  # 정지는 딱 그 말일 때만
     assert bot.intent("날씨 어떠니") == "unknown"
+
+
+async def test_analysis_report_lists_every_watched_coin(tmp_path):
+    from app.strategies.short_term import ShortTermParams
+
+    store = TraderStore(tmp_path / "trader.json")
+    with store.edit() as s:
+        s.config = TraderConfig(enabled=True, interval="1h", watch=["KRW-ETH", "KRW-XRP"],
+                                params=ShortTermParams(fast=2, slow=3, rsi_period=2, rsi_max=100))
+    text = await bot.analysis_report(store, FakeExchange())
+    assert "코인 3개 분석" in text and "BTC:" in text and "ETH:" in text and "XRP:" in text

@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react'
-import { api, withTelegramCode, type Market, type RecommendRow, type TraderConfig, type TraderView } from '../api'
+import {
+  api,
+  withTelegramCode,
+  type BacktestParams,
+  type Market,
+  type RecommendRow,
+  type TraderConfig,
+  type TraderView,
+  type ValidateRow,
+} from '../api'
 import { describeParams, formatKrw, formatKst, trendClass } from '../format'
 
 const REFRESH_MS = 5000
@@ -10,6 +19,13 @@ const INTERVALS = [
   { value: '4h', label: '4시간봉' },
   { value: '1d', label: '일봉' },
 ] as const
+
+// 여러 코인 동시 감시에서 검증해 볼 코인들 (대시보드 관심 코인과 같다)
+const WATCH_CANDIDATES = ['KRW-BTC', 'KRW-ETH', 'KRW-XRP', 'KRW-SOL', 'KRW-DOGE']
+
+function pct(v: number) {
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
+}
 
 function signedKrw(v: string | number) {
   const n = Number(v)
@@ -33,6 +49,8 @@ export function Trader({ markets }: { markets: Market[] }) {
   const [busy, setBusy] = useState(false)
   const [rows, setRows] = useState<RecommendRow[] | null>(null)
   const [finding, setFinding] = useState(false)
+  const [checks, setChecks] = useState<ValidateRow[] | null>(null)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -109,6 +127,27 @@ export function Trader({ markets }: { markets: Market[] }) {
     })
   }
 
+  async function validateCoins() {
+    if (!draft) return
+    setChecking(true)
+    setMessage(null)
+    try {
+      const coins = [draft.market, ...WATCH_CANDIDATES.filter((m) => m !== draft.market)]
+      setChecks((await api.validate(coins, draft.interval === '1d' ? '1d' : '4h', draft.params, draft.fee_rate)).rows)
+    } catch (e) {
+      setMessage({ ok: false, text: (e as Error).message })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  function watchPassed() {
+    if (!draft || !checks) return
+    // 수수료를 빼고도 검증 기간에 수익을 낸 코인만 함께 본다. 기본 코인은 늘 본다
+    const watch = checks.filter((r) => r.passed && r.market !== draft.market).map((r) => r.market)
+    save({ ...draft, watch })
+  }
+
   async function emergencyStop() {
     if (!confirm('보유 중인 코인을 시장가로 모두 팔고 단기 매매를 끕니다. 계속할까요?')) return
     setBusy(true)
@@ -129,7 +168,8 @@ export function Trader({ markets }: { markets: Market[] }) {
 
   const cfg = view.config
   const breakout = draft.params.strategy === 'breakout'
-  const coin = cfg.market.replace('KRW-', '')
+  const coin = view.held_market.replace('KRW-', '')
+  const watching = [cfg.market, ...(cfg.watch ?? [])].map((m) => m.replace('KRW-', ''))
   const pos = view.position
   const status = view.stop_requested
     ? '정지 중…'
@@ -237,6 +277,64 @@ export function Trader({ markets }: { markets: Market[] }) {
           </table>
         )}
       </section>
+
+      {!breakout && (
+        <section className="card" style={{ marginBottom: 16 }}>
+          <div className="card-head">
+            <h2>여러 코인 동시 감시</h2>
+            <span className="summary">지금 보는 코인: {watching.join(', ')}</span>
+          </div>
+          <p className="summary">
+            지금 설정({describeParams(draft.params as unknown as BacktestParams)})을 코인마다 과거 데이터로 돌려 봐요.
+            수수료를 빼고도 검증 기간(뒤 30%)과 전체 기간 모두 수익이 난 코인만 감시 목록에 넣어요. 먼저 매수 신호가 온
+            코인 하나를 사고, 판 뒤에 다시 모든 코인을 봐요.
+          </p>
+          <div className="form-actions" style={{ marginBottom: 12 }}>
+            <button onClick={validateCoins} disabled={checking || busy}>
+              {checking ? '코인 5개 계산 중… (1분 정도)' : '코인별 검증하기'}
+            </button>
+            {checks && (
+              <button className="secondary" onClick={watchPassed} disabled={busy}>
+                통과한 코인만 감시 목록에 넣기
+              </button>
+            )}
+          </div>
+          {checks && (
+            <table className="ticker-table">
+              <thead>
+                <tr>
+                  <th>코인</th>
+                  <th className="num">검증 기간</th>
+                  <th className="num hide-sm">그냥 보유</th>
+                  <th className="num hide-sm">전체 기간</th>
+                  <th className="num hide-sm">거래</th>
+                  <th className="num">결과</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checks.map((r) => (
+                  <tr key={r.market}>
+                    <td>{r.market.replace('KRW-', '')}</td>
+                    {r.test && r.full ? (
+                      <>
+                        <td className={`num ${trendClass(r.test.return_pct)}`}>{pct(r.test.return_pct)}</td>
+                        <td className="num hide-sm">{pct(r.test.buy_hold_pct)}</td>
+                        <td className={`num hide-sm ${trendClass(r.full.return_pct)}`}>{pct(r.full.return_pct)}</td>
+                        <td className="num hide-sm">{r.test.trade_count}회</td>
+                        <td className={`num ${r.passed ? 'up' : 'down'}`}>{r.passed ? '✅ 통과' : '❌ 제외'}</td>
+                      </>
+                    ) : (
+                      <td colSpan={5} className="num error">
+                        {r.error}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
 
       <section className="card">
         <div className="card-head">

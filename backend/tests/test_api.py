@@ -173,3 +173,37 @@ def test_recommend_ranks_by_test_return(tmp_path, monkeypatch):
         assert {r["interval"] for r in rows} == {"4h", "1d"}
         traded = [r for r in rows if r["test"]["trade_count"] > 0]
         assert [r["test"]["return_pct"] for r in traded] == sorted((r["test"]["return_pct"] for r in traded), reverse=True)
+
+
+def test_validate_runs_same_params_on_each_coin(tmp_path, monkeypatch):
+    import math
+    from datetime import datetime, timedelta
+    from decimal import Decimal
+
+    from app.exchanges.base import Candle, ExchangeError
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    from app.main import app
+
+    class Fake:
+        async def candle_history(self, market, interval, total):
+            if market == "KRW-NOPE":
+                raise ExchangeError("없는 코인")
+            out, p = [], 100.0
+            for i in range(400):
+                o = p
+                p = 100 + 10 * math.sin(i / 7) + (i / 20 if market == "KRW-BTC" else -i / 20)
+                out.append(Candle(market, datetime(2026, 1, 1) + timedelta(days=i), Decimal(o), Decimal(max(o, p) + 1),
+                                  Decimal(min(o, p) - 1), Decimal(p), Decimal(1)))
+            return out
+
+        async def close(self):
+            pass
+
+    params = {"fast": 3, "slow": 10, "stop_loss_pct": 3, "take_profit_pct": 10}
+    with TestClient(app) as client:
+        app.state.exchange = Fake()
+        rows = client.post("/api/strategies/validate",
+                           json={"markets": ["KRW-BTC", "KRW-ETH", "KRW-NOPE"], "params": params}).json()["rows"]
+    assert [r["market"] for r in rows] == ["KRW-BTC", "KRW-ETH", "KRW-NOPE"]
+    assert "error" in rows[2] and "passed" in rows[0] and rows[0]["test"]["trade_count"] >= 0

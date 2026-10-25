@@ -19,7 +19,7 @@ from .exchanges.base import ExchangeError
 from .store import TraderStore
 from .strategies.dca import KST
 from .strategies.short_term import analysis
-from .strategies.trader import TraderState, _completed, position_value, today_pnl
+from .strategies.trader import TraderState, _bars, held_market, position_value, today_pnl
 
 log = logging.getLogger("bot")
 
@@ -36,7 +36,7 @@ def status_text(state: TraderState, price: Decimal | None, now: datetime) -> str
     run = "켜짐" if cfg.enabled else "꺼짐"
     if state.halted_until is not None and now < state.halted_until:
         run = f"쉬는 중 ({state.halt_reason})"
-    lines = [f"📊 단기 매매 · {mode} · {run}", f"{cfg.market} 현재가 {price:,.0f}원" if price else "현재가를 못 받았어요"]
+    lines = [f"📊 단기 매매 · {mode} · {run}", f"{held_market(state)} 현재가 {price:,.0f}원" if price else "현재가를 못 받았어요"]
     if price is not None:
         equity = state.cash_krw + position_value(state, price)
         lines.append(f"운용 자산 {equity:,.0f}원 (시작 {cfg.budget_krw:,.0f}원)")
@@ -45,9 +45,10 @@ def status_text(state: TraderState, price: Decimal | None, now: datetime) -> str
     if state.position is not None:
         p = state.position
         change = f" ({(price / p.entry_price - 1) * 100:+.2f}%)" if price else ""
-        lines.append(f"보유 중: {p.entry_price:,.0f}원에 매수{change}")
+        lines.append(f"보유 중: {held_market(state).split('-', 1)[1]} {p.entry_price:,.0f}원에 매수{change}")
     else:
-        lines.append("보유 중인 코인 없음 (매수 신호를 기다리는 중)")
+        names = ", ".join(m.split("-", 1)[1] for m in cfg.markets)
+        lines.append(f"보유 중인 코인 없음 ({names} 매수 신호를 기다리는 중)")
     sells = [t for t in state.trades if t.ok and t.pnl_krw is not None]
     if sells:
         wins = sum(1 for t in sells if t.pnl_krw > 0)
@@ -57,6 +58,26 @@ def status_text(state: TraderState, price: Decimal | None, now: datetime) -> str
 
 def _won(v: float | None) -> str:
     return f"{v:,.0f}원" if v is not None else "계산 중"
+
+
+def analysis_line(state: TraderState, market: str, bars) -> str:
+    """여러 코인을 볼 때 한 줄 요약."""
+    p = state.config.params
+    name = market.split("-", 1)[1]
+    if len(bars) < p.warmup:
+        return f"{name}: 데이터 모자람"
+    a = analysis([float(c.close) for c in bars], p)
+    ok = lambda b: "✅" if b else "❌"  # noqa: E731
+    line = f"{name}: {ok(a['fast_above'])}평균 {ok(a['rsi_ok'])}RSI"
+    if p.trend_period:
+        line += f" {ok(a['trend_ok'])}추세"
+    if a["signal"] == "buy":
+        line += " ➡️ 매수 신호!"
+    elif a["buy_above"]:
+        line += f" · 🎯 {(a['buy_above'] / a['close'] - 1) * 100:+.1f}% 오르면 신호"
+    elif a["fast_above"]:
+        line += " · 이미 위 (다시 뚫을 때)"
+    return line
 
 
 def analysis_text(state: TraderState, bars) -> str:
@@ -101,12 +122,19 @@ def analysis_text(state: TraderState, bars) -> str:
 async def analysis_report(store: TraderStore, exchange) -> str:
     state = store.load()
     cfg = state.config
-    need = cfg.params.warmup + 50
-    if need > 200:
-        candles = await exchange.candle_history(cfg.market, cfg.interval, need)
-    else:
-        candles = await exchange.candles(cfg.market, cfg.interval, need)
-    return analysis_text(state, _completed(candles, cfg.interval, datetime.now(KST)))
+    now = datetime.now(KST)
+    markets = [held_market(state)] if state.position is not None else cfg.markets
+    if len(markets) == 1:
+        bars, _ = await _bars(exchange, cfg, markets[0], now)
+        return analysis_text(state, bars)
+    lines = [f"🔎 코인 {len(markets)}개 분석 (평균 {cfg.params.fast}/{cfg.params.slow}봉 교차, 먼저 신호 온 코인을 삽니다)"]
+    for market in markets:
+        try:
+            bars, _ = await _bars(exchange, cfg, market, now)
+            lines.append(analysis_line(state, market, bars))
+        except ExchangeError:
+            lines.append(f"{market.split('-', 1)[1]}: 시세를 못 받았어요")
+    return "\n".join(lines)
 
 
 async def briefing(store: TraderStore, exchange) -> str:
@@ -114,7 +142,7 @@ async def briefing(store: TraderStore, exchange) -> str:
     state = store.load()
     price = None
     try:
-        [ticker] = await exchange.tickers([state.config.market])
+        [ticker] = await exchange.tickers([held_market(state)])
         price = ticker.price
     except ExchangeError:
         pass

@@ -180,3 +180,37 @@ async def test_breakout_buys_above_target_once_per_bar_and_sells_on_new_bar():
     ex.price = Decimal(107)
     [t] = await step(s, ex, later)
     assert t.side == "sell" and t.reason == "다음 봉 시가 청산"
+
+
+async def test_watch_list_buys_the_coin_that_signals_and_sells_it():
+    s = TraderState(config=TraderConfig(enabled=True, params=PARAMS, watch=["KRW-ETH"], daily_loss_limit_pct=Decimal(10)))
+    ex = FakeExchange()
+    flat, golden = bars((100, 100, 100, 100, 100)), bars(GOLDEN)
+
+    async def candles(market, interval, count=200):
+        return [Candle(market, c.time_kst, c.open, c.high, c.low, c.close, c.volume)
+                for c in (golden if market == "KRW-ETH" else flat)]
+    ex.candles = candles
+    [t] = await step(s, ex, NOW)
+    assert t.market == "KRW-ETH" and t.reason == "ETH 매수 신호"
+    assert s.position.market == "KRW-ETH"
+    # 들고 있는 동안은 다른 코인을 사지 않고, 손절은 ETH 가격으로 판단한다
+    ex.price = Decimal(90)
+    [t] = await step(s, ex, NOW + timedelta(minutes=1))
+    assert t.side == "sell" and t.market == "KRW-ETH" and s.position is None
+
+
+async def test_watch_skips_fetching_until_next_bar_can_close():
+    s = TraderState(config=TraderConfig(enabled=True, params=PARAMS, watch=["KRW-ETH"]))
+    ex = FakeExchange()
+    calls = []
+    orig = ex.candles
+
+    async def candles(market, interval, count=200):
+        calls.append(market)
+        return await orig(market, interval, count)
+    ex.candles = candles
+    await step(s, ex, NOW)
+    assert calls == ["KRW-BTC", "KRW-ETH"]
+    await step(s, ex, NOW + timedelta(minutes=1))
+    assert calls == ["KRW-BTC", "KRW-ETH"]  # 같은 봉 안에서는 다시 받지 않는다
