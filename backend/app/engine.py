@@ -53,6 +53,7 @@ async def trader_tick(store: TraderStore, exchange) -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # 요청 주소에 텔레그램 토큰이 들어 있어 찍지 않는다
     store = DcaStore(config.DATA_DIR / "dca.json")
     trader_store = TraderStore(config.DATA_DIR / "trader.json")
     exchange = BithumbExchange(config.BITHUMB_ACCESS_KEY, config.BITHUMB_SECRET_KEY)

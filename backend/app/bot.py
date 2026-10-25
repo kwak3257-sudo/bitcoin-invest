@@ -92,6 +92,10 @@ async def poll(store: TraderStore, exchange) -> None:
                         continue  # 내 텔레그램이 아니면 답하지 않는다
                     reply = await handle(msg.get("text", ""), store, exchange)
                     await notify.send(reply)
+            except httpx.HTTPStatusError as exc:
+                hint = " (토큰이 바뀌었으면 connect.bat을 다시 실행하세요)" if exc.response.status_code == 401 else ""
+                log.warning("텔레그램 명령 받기 실패: %s%s", exc.response.status_code, hint)
+                await asyncio.sleep(60)
             except Exception as exc:  # 봇이 멈춰도 매매는 계속한다
-                log.warning("텔레그램 명령 처리 실패: %s", exc)
+                log.warning("텔레그램 명령 처리 실패: %s", notify.redact(str(exc)))
                 await asyncio.sleep(30)
