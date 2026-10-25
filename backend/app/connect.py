@@ -2,7 +2,7 @@
 
 - 빗썸: 이 PC의 공인 IP를 보여 주고(키 발급 때 허용 IP로 넣음), 키를 받아 잔고 조회로 확인한다.
 - 텔레그램: 봇 토큰을 확인하고, 사용자가 봇에게 보낸 메시지로 채팅 ID를 찾는다.
-키와 토큰은 화면에 보이지 않게 입력받고, 이 PC의 .env에만 저장한다. Enter만 누르면 그 단계는 건너뛴다.
+키와 토큰은 복사만 하고 Enter를 누르면 클립보드에서 읽는다(붙여 넣어도 된다). 이 PC의 .env에만 저장하고, s를 넣으면 그 단계는 건너뛴다.
 
     python -m app.connect
 """
@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import asyncio
-import getpass
+import subprocess
 import sys
 import time
 
@@ -22,6 +22,31 @@ from .exchanges.bithumb import BithumbExchange
 
 ENV = ROOT / ".env"
 WAIT_SECONDS = 180
+RECENT_SECONDS = 600  # 프로그램이 기다리기 전에 보낸 메시지도 10분 안이면 받아 준다
+
+
+def clipboard() -> str:
+    if sys.platform != "win32":
+        return ""
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                             capture_output=True, text=True, timeout=10)
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def read_secret(label: str) -> str | None:
+    """복사해 둔 값을 읽는다. 건너뛰면 None."""
+    while True:
+        typed = input(f"{label}을(를) 복사한 뒤 Enter (붙여 넣어도 됨, 건너뛰려면 s 입력 후 Enter): ").strip()
+        if typed.lower() == "s":
+            return None
+        value = typed or clipboard()
+        if value and " " not in value and len(value) >= 20:
+            print(f"   읽었어요: {value[:4]}…{value[-4:]}")
+            return value
+        print("   복사된 값을 찾지 못했어요. 다시 복사한 뒤 Enter를 눌러 주세요.")
 
 
 def save_env(values: dict[str, str]) -> None:
@@ -60,11 +85,14 @@ def connect_bithumb() -> bool:
     print("빗썸 웹사이트에 로그인해 API 관리 메뉴에서 새 키를 발급하세요.")
     print("  - 권한: 자산 조회, 주문 조회, 주문하기만 체크. ★출금은 절대 체크하지 마세요★")
     print(f"  - 허용 IP: {ip or '(IP를 찾지 못했습니다. 네이버에서 내 IP 주소를 검색해 넣으세요)'}")
-    access = getpass.getpass("Access Key를 붙여넣고 Enter (화면에 안 보임, 건너뛰려면 그냥 Enter): ").strip()
+    access = read_secret("Access Key")
     if not access:
         print("빗썸 연결을 건너뜁니다. 모의투자는 키 없이도 됩니다.")
         return True
-    secret = getpass.getpass("Secret Key를 붙여넣고 Enter (화면에 안 보임): ").strip()
+    secret = read_secret("Secret Key")
+    if not secret:
+        print("빗썸 연결을 건너뜁니다.")
+        return True
     try:
         krw = asyncio.run(check_bithumb(access, secret))
     except ExchangeError as exc:
@@ -79,7 +107,7 @@ def connect_bithumb() -> bool:
 def connect_telegram() -> bool:
     print("\n=== 2. 텔레그램 (알림과 인증번호) ===")
     print("휴대폰 텔레그램에서 @BotFather 를 검색해 /newbot 을 보내고, 봇 이름을 두 번 정하면 토큰을 줍니다.")
-    token = getpass.getpass("토큰을 붙여넣고 Enter (화면에 안 보임, 건너뛰려면 그냥 Enter): ").strip()
+    token = read_secret("토큰")
     if not token:
         print("텔레그램 연결을 건너뜁니다. 실거래는 텔레그램을 연결해야 켤 수 있어요.")
         return True
@@ -90,11 +118,10 @@ def connect_telegram() -> bool:
             print("토큰이 맞지 않습니다. BotFather가 준 토큰 전체를 다시 복사해 주세요.")
             return False
         name = r.json()["result"]["username"]
-        # 예전 메시지는 건너뛰고, 지금부터 오는 메시지만 본다
-        old = client.get(f"{api}/getUpdates", params={"offset": -1}).json().get("result", [])
-        offset = old[-1]["update_id"] + 1 if old else None
+        since = time.time() - RECENT_SECONDS
+        offset = None
 
-        print(f"휴대폰 텔레그램에서 @{name} 을 검색해 열고, 시작(Start)을 누르거나 아무 글자나 보내세요.")
+        print(f"휴대폰 텔레그램에서 @{name} 을 검색해 열고, 시작(Start)을 누르거나 아무 글자나 보내세요. 이미 보냈다면 잠시 기다리세요.")
         print(f"   {WAIT_SECONDS // 60}분 동안 기다립니다...")
         chat_id = None
         deadline = time.time() + WAIT_SECONDS
@@ -103,7 +130,7 @@ def connect_telegram() -> bool:
             for u in client.get(f"{api}/getUpdates", params=params, timeout=30).json().get("result", []):
                 offset = u["update_id"] + 1
                 msg = u.get("message") or {}
-                if msg.get("chat", {}).get("type") == "private":
+                if msg.get("chat", {}).get("type") == "private" and msg.get("date", 0) >= since:
                     chat_id = msg["chat"]["id"]
         if chat_id is None:
             print("메시지를 받지 못했습니다. 봇에게 메시지를 보낸 뒤 connect.bat을 다시 실행하세요.")
