@@ -1,0 +1,21 @@
+@echo off
+chcp 65001 > nul
+cd /d "%~dp0"
+if not exist backend\.venv (
+  echo 먼저 setup.bat을 실행하세요.
+  pause
+  exit /b 1
+)
+echo 빗썸 API 키와 텔레그램을 연결합니다. 키와 토큰은 이 PC의 .env 파일에만 저장됩니다.
+if not exist .env copy .env.example .env > nul
+backend\.venv\Scripts\python -m app.connect
+if errorlevel 1 (
+  echo.
+  echo 연결이 끝나지 않았습니다. 위 안내를 확인한 뒤 다시 실행하세요.
+  pause
+  exit /b 1
+)
+echo.
+echo 새 설정으로 프로그램을 다시 켭니다.
+call start.bat
+pause
