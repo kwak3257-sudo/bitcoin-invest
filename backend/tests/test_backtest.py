@@ -80,3 +80,60 @@ def test_metrics_shape():
     assert len(r.equity) == 200
     assert 0 <= r.max_drawdown_pct <= 100
     assert 0 <= r.win_rate_pct <= 100
+
+
+def test_trend_filter_blocks_buys_in_downtrend():
+    from app.strategies.short_term import signals
+
+    # 긴 하락 뒤 잠깐 반등: 교차는 나오지만 200봉 평균 아래라 사지 않는다
+    closes = [300 - i for i in range(250)] + [50, 50, 50, 40, 70]
+    base = ShortTermParams(fast=2, slow=3, rsi_period=2, rsi_max=100)
+    assert "buy" in signals(closes, base)
+    assert "buy" not in signals(closes, base.model_copy(update={"trend_period": 200}))
+
+
+def test_trade_from_ignores_earlier_bars():
+    candles = candles_from([100] * 30 + [110] * 30)
+    p = ShortTermParams(fast=2, slow=3, rsi_period=2)
+    r = run_backtest(candles, p, BacktestCosts(), trade_from=40)
+    assert r.equity[0]["time"] == candles[40].time_kst
+    assert all(t.entry_time >= candles[40].time_kst for t in r.trades)
+
+
+def test_optimize_reports_train_and_test(monkeypatch):
+    import math
+
+    from app import backtest
+
+    monkeypatch.setattr(backtest, "GRID", {
+        "fast": [3, 5], "slow": [10], "trend_period": [None], "stop_loss_pct": [2], "take_profit_pct": [4],
+    })
+    closes = [100 + 10 * math.sin(i / 8) for i in range(400)]
+    out = backtest.optimize(candles_from(closes), BacktestCosts())
+    assert out["tested"] == 2 and len(out["picks"]) == 2
+    first = out["picks"][0]
+    assert first["train"]["return_pct"] >= out["picks"][1]["train"]["return_pct"]
+    assert "return_pct" in first["test"]
+
+
+def bar(i, o, h, lo, c):
+    return Candle("KRW-BTC", datetime(2026, 1, 1) + timedelta(days=i), Decimal(o), Decimal(h), Decimal(lo), Decimal(c),
+                  Decimal(1))
+
+
+def test_breakout_buys_at_target_and_sells_next_open():
+    candles = [bar(0, 100, 105, 95, 100), bar(1, 100, 110, 99, 108), bar(2, 108, 109, 107, 108)]
+    p = ShortTermParams(strategy="breakout", k=Decimal("0.5"))
+    r = run_backtest(candles, p, BacktestCosts(fee_rate=Decimal(0), slippage_pct=Decimal(0)))
+    [t] = r.trades
+    assert t.entry_price == 105 and t.exit_price == 108 and t.reason == "다음 봉 시가 청산"
+    assert round(r.final_krw) == round(100000 * 108 / 105)
+
+
+def test_breakout_no_entry_below_target_and_stop_on_close():
+    flat = [bar(0, 100, 105, 95, 100), bar(1, 100, 104, 99, 101), bar(2, 101, 102, 100, 101)]
+    p = ShortTermParams(strategy="breakout", k=Decimal("0.5"), stop_loss_pct=Decimal(2))
+    assert run_backtest(flat, p, BacktestCosts()).trade_count == 0
+    crash = [bar(0, 100, 105, 95, 100), bar(1, 100, 106, 90, 91), bar(2, 91, 92, 90, 91)]
+    [t] = run_backtest(crash, p, BacktestCosts(fee_rate=Decimal(0), slippage_pct=Decimal(0))).trades
+    assert t.reason == "손절" and t.exit_price == 105 * 0.98
