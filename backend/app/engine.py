@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 from . import bot, config, notify
@@ -17,6 +18,24 @@ from .strategies.dca import KST, run_if_due, take_profit_if_reached
 
 log = logging.getLogger("engine")
 BRIEFING_HOUR = 9  # 오전 9시
+PAUSE_ALERT_SECONDS = 10 * 60
+
+
+def _human(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}분"
+    hours = minutes // 60
+    return f"{hours // 24}일 {hours % 24}시간" if hours >= 24 else f"{hours}시간"
+
+
+def _downtime(path) -> str | None:
+    """엔진은 켜져 있는 동안 30초마다 상태 파일을 쓴다. 마지막으로 쓴 뒤 오래 지났으면 그만큼 꺼져 있던 것이다."""
+    try:
+        gap = time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+    return _human(gap) if gap > PAUSE_ALERT_SECONDS else None
 
 
 async def tick(store: DcaStore, exchange) -> None:
@@ -68,8 +87,11 @@ async def main() -> None:
     last_error = None
     commands = asyncio.create_task(bot.poll(trader_store, exchange))  # 휴대폰에서 /상태, /정지
     t = trader_store.load().config
+    off = _downtime(trader_store.path) if t.enabled else None
     await notify.send(f"🟢 매매 엔진이 켜졌어요. 단기 매매 {'실거래' if t.mode == 'live' else '모의투자'} · "
-                      f"{'켜짐' if t.enabled else '꺼짐'}. /상태 로 현황을 볼 수 있어요.")
+                      f"{'켜짐' if t.enabled else '꺼짐'}. /상태 로 현황을 볼 수 있어요."
+                      + (f"\n⚠️ 그동안 약 {off} 꺼져 있었어요. 그 사이에는 매매를 못 했어요." if off else ""))
+    last_tick = time.monotonic()
     briefed = None
     try:
         while True:
@@ -89,6 +111,12 @@ async def main() -> None:
                 except Exception as exc:
                     log.warning("브리핑 실패: %s", exc)
             await asyncio.sleep(config.ENGINE_TICK_SECONDS)
+            # 절전에서 깨어나면 멈춰 있던 시간이 한꺼번에 지나간다. 길게 멈췄으면 알린다
+            gap = time.monotonic() - last_tick
+            last_tick = time.monotonic()
+            if gap > PAUSE_ALERT_SECONDS:
+                await notify.send(f"⚠️ PC가 약 {_human(gap)} 동안 멈춰 있었어요 (절전 등). 지금은 다시 돌아가요. "
+                                  "윈도우 설정에서 절전을 '안 함'으로 바꾸면 멈추지 않아요.")
     finally:
         commands.cancel()
         await exchange.close()

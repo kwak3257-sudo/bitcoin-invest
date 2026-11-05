@@ -117,10 +117,13 @@ export function Trader({ markets }: { markets: Market[] }) {
 
   function applyPaper(row: RecommendRow) {
     if (!draft) return
-    // 추천 설정은 언제나 모의투자로 먼저 넣는다. 실거래는 사용자가 직접 바꾼다
+    // 추천 설정은 기본으로 모의투자에 넣는다. 실거래 중이면 계속 실거래로 둘지 묻는다 (몰래 모의투자로 바뀌지 않게)
+    const keepLive =
+      draft.mode === 'live' &&
+      confirm('지금 실거래 중이에요. 이 설정으로 실거래를 계속할까요?\n취소를 누르면 모의투자로 바뀌어요.')
     save({
       ...draft,
-      mode: 'paper',
+      mode: keepLive ? 'live' : 'paper',
       enabled: true,
       interval: row.interval,
       params: { ...draft.params, ...(row.params as unknown as TraderConfig['params']) },
@@ -232,7 +235,7 @@ export function Trader({ markets }: { markets: Market[] }) {
         </div>
         <div className="form-actions" style={{ marginBottom: 12 }}>
           <button onClick={() => findBest(true)} disabled={finding || busy}>
-            {finding ? '두 전략 × 4시간봉·일봉 계산 중… (1분 정도)' : '가장 좋은 설정 찾아서 모의투자에 넣기'}
+            {finding ? '두 전략 × 4시간봉·일봉 계산 중… (1분 정도)' : '가장 좋은 설정 찾아서 넣기'}
           </button>
           {message && <span className={message.ok ? 'ok' : 'error'}>{message.text}</span>}
         </div>
