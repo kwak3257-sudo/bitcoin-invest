@@ -56,3 +56,154 @@ def test_analysis_includes_fees(tmp_path, monkeypatch):
     assert Decimal(r["total_pnl_krw"]) == Decimal("1945")
     assert Decimal(r["fees_krw"]) == Decimal(25)
     assert r["buy_count"] == 1 and len(r["curve"]) == 1
+
+
+def test_trader_settings_and_emergency_stop(tmp_path, monkeypatch):
+    from datetime import datetime
+    from decimal import Decimal
+
+    from app.exchanges.base import Ticker
+    from app.store import TraderStore
+    from app.strategies.dca import KST
+    from app.strategies.trader import OpenPosition
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    from app.main import app
+
+    class Fake:
+        async def tickers(self, markets):
+            return [Ticker(markets[0], Decimal(110), *(Decimal(0),) * 6, datetime.now(KST))]
+
+        async def close(self):
+            pass
+
+    with TestClient(app) as client:
+        app.state.exchange = Fake()
+        r = client.get("/api/strategies/trader")
+        assert r.status_code == 200
+        v = r.json()
+        assert v["config"]["enabled"] is False and v["config"]["mode"] == "paper"
+        assert Decimal(v["daily_loss_limit_krw"]) == 3000
+
+        cfg = {**v["config"], "enabled": True}
+        assert client.put("/api/strategies/trader", json=cfg).json()["config"]["enabled"] is True
+        assert client.put("/api/strategies/trader", json={**cfg, "mode": "live"}).status_code == 400
+
+        store = TraderStore(tmp_path / "trader.json")
+        with store.edit() as s:
+            s.position = OpenPosition(entry_at=datetime.now(KST), entry_price=Decimal(100), volume=Decimal(100),
+                                      cost_krw=Decimal(10025))
+        v = client.get("/api/strategies/trader").json()
+        # 평가 금액은 매도 수수료를 뺀다: 100 * 110 * 0.9975
+        assert Decimal(v["position_value_krw"]) == Decimal("10972.5")
+        assert client.put("/api/strategies/trader", json={**cfg, "market": "KRW-ETH"}).status_code == 400
+
+        v = client.post("/api/strategies/trader/stop").json()
+        assert v["stop_requested"] is True  # 보유 중이면 엔진이 팔고 끈다
+
+
+def test_live_settings_need_telegram_code(tmp_path, monkeypatch):
+    from app import notify
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "BITHUMB_ACCESS_KEY", "a")
+    monkeypatch.setattr(config, "BITHUMB_SECRET_KEY", "b")
+    sent = []
+
+    async def fake_send(text):
+        sent.append(text)
+
+    monkeypatch.setattr(notify, "send", fake_send)
+    from app.main import app
+
+    with TestClient(app) as client:
+        cfg = {**client.get("/api/strategies/dca").json()["config"], "enabled": True, "mode": "live"}
+
+        monkeypatch.setattr(notify, "enabled", lambda: False)
+        assert client.put("/api/strategies/dca", json=cfg).status_code == 400  # 텔레그램 없으면 실거래 불가
+
+        monkeypatch.setattr(notify, "enabled", lambda: True)
+        r = client.put("/api/strategies/dca", json=cfg)
+        assert r.status_code == 428
+        code = sent[-1].split()[2]
+        assert len(code) == 6 and code.isdigit()
+
+        wrong = "000000" if code != "000000" else "111111"
+        assert client.put(f"/api/strategies/dca?code={wrong}", json=cfg).status_code == 403
+        # 받은 번호로 다른 설정을 저장하려 하면 새 번호가 간다
+        assert client.put(f"/api/strategies/dca?code={code}", json={**cfg, "krw_amount": "90000"}).status_code == 428
+        code = sent[-1].split()[2]
+        r = client.put(f"/api/strategies/dca?code={code}", json={**cfg, "krw_amount": "90000"})
+        assert r.status_code == 200 and r.json()["config"]["mode"] == "live"
+        # 끄는 것은 인증 없이 바로 된다
+        assert client.put("/api/strategies/dca", json={**cfg, "krw_amount": "90000", "enabled": False}).status_code == 200
+
+
+def test_recommend_ranks_by_test_return(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from decimal import Decimal
+
+    from app import backtest
+    from app.exchanges.base import Candle
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(backtest, "GRID", {
+        "fast": [3], "slow": [10], "trend_period": [None], "stop_loss_pct": [2], "take_profit_pct": [4, 6],
+    })
+    monkeypatch.setattr(backtest, "BREAKOUT_GRID", {"k": ["0.5"], "trend_period": [None], "stop_loss_pct": [2]})
+    from app.main import app
+
+    class Fake:
+        async def candle_history(self, market, interval, total):
+            import math
+            out, p = [], 100.0
+            for i in range(400):
+                o = p
+                p = 100 + 10 * math.sin(i / 7)
+                out.append(Candle(market, datetime(2026, 1, 1) + timedelta(hours=i), Decimal(o), Decimal(max(o, p) + 1),
+                                  Decimal(min(o, p) - 1), Decimal(p), Decimal(1)))
+            return out
+
+        async def close(self):
+            pass
+
+    with TestClient(app) as client:
+        app.state.exchange = Fake()
+        rows = client.post("/api/strategies/recommend", json={}).json()["rows"]
+        assert {r["interval"] for r in rows} == {"4h", "1d"}
+        traded = [r for r in rows if r["test"]["trade_count"] > 0]
+        assert [r["test"]["return_pct"] for r in traded] == sorted((r["test"]["return_pct"] for r in traded), reverse=True)
+
+
+def test_validate_runs_same_params_on_each_coin(tmp_path, monkeypatch):
+    import math
+    from datetime import datetime, timedelta
+    from decimal import Decimal
+
+    from app.exchanges.base import Candle, ExchangeError
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    from app.main import app
+
+    class Fake:
+        async def candle_history(self, market, interval, total):
+            if market == "KRW-NOPE":
+                raise ExchangeError("없는 코인")
+            out, p = [], 100.0
+            for i in range(400):
+                o = p
+                p = 100 + 10 * math.sin(i / 7) + (i / 20 if market == "KRW-BTC" else -i / 20)
+                out.append(Candle(market, datetime(2026, 1, 1) + timedelta(days=i), Decimal(o), Decimal(max(o, p) + 1),
+                                  Decimal(min(o, p) - 1), Decimal(p), Decimal(1)))
+            return out
+
+        async def close(self):
+            pass
+
+    params = {"fast": 3, "slow": 10, "stop_loss_pct": 3, "take_profit_pct": 10}
+    with TestClient(app) as client:
+        app.state.exchange = Fake()
+        rows = client.post("/api/strategies/validate",
+                           json={"markets": ["KRW-BTC", "KRW-ETH", "KRW-NOPE"], "params": params}).json()["rows"]
+    assert [r["market"] for r in rows] == ["KRW-BTC", "KRW-ETH", "KRW-NOPE"]
+    assert "error" in rows[2] and "passed" in rows[0] and rows[0]["test"]["trade_count"] >= 0

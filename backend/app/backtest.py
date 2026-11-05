@@ -17,7 +17,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 from .exchanges.base import Candle
-from .strategies.short_term import ShortTermParams, signals
+from .strategies.short_term import ShortTermParams, breakout_target, signals, sma
 
 
 class BacktestCosts(BaseModel):
@@ -53,16 +53,22 @@ class BacktestResult:
     equity: list[dict]  # [{"time", "equity", "buy_hold"}]
 
 
-def run_backtest(candles: list[Candle], params: ShortTermParams, costs: BacktestCosts) -> BacktestResult:
-    if len(candles) < params.slow + 2:
-        raise ValueError(f"캔들이 너무 적습니다. 최소 {params.slow + 2}개가 필요합니다(현재 {len(candles)}개).")
+def run_backtest(
+    candles: list[Candle], params: ShortTermParams, costs: BacktestCosts, trade_from: int = 0
+) -> BacktestResult:
+    """trade_from보다 앞의 봉은 지표 계산에만 쓰고, 거래와 성과는 그 봉부터 센다."""
+    need = params.warmup + 1
+    if len(candles) - trade_from < 2 or len(candles) < need:
+        raise ValueError(f"캔들이 너무 적습니다. 최소 {need}개가 필요합니다(현재 {len(candles)}개).")
 
     o = [float(c.open) for c in candles]
     h = [float(c.high) for c in candles]
     lo = [float(c.low) for c in candles]
     cl = [float(c.close) for c in candles]
     t = [c.time_kst for c in candles]
-    sig = signals(cl, params)
+    breakout = params.strategy == "breakout"
+    sig = None if breakout else signals(cl, params)
+    trend = sma(cl, params.trend_period) if breakout and params.trend_period else None
 
     fee = float(costs.fee_rate)
     slip = float(costs.slippage_pct) / 100
@@ -77,7 +83,7 @@ def run_backtest(candles: list[Candle], params: ShortTermParams, costs: Backtest
     fees = 0.0
     equity: list[dict] = []
     in_market_bars = 0
-    hold_qty = initial / (o[0] * (1 + slip) * (1 + fee))  # 비교용: 첫 봉에 전부 사서 보유
+    hold_qty = initial / (o[trade_from] * (1 + slip) * (1 + fee))  # 비교용: 첫 봉에 전부 사서 보유
 
     def buy(i: int, price: float) -> None:
         nonlocal cash, qty, open_trade, cost_basis, fees
@@ -104,16 +110,29 @@ def run_backtest(candles: list[Candle], params: ShortTermParams, costs: Backtest
         trades.append(open_trade)
         open_trade, qty = None, 0.0
 
-    for i in range(len(candles)):
+    for i in range(trade_from, len(candles)):
+        if breakout:
+            # 직전 봉에 산 것은 이번 봉 시가에 판다
+            if open_trade is not None:
+                sell(i, o[i], "다음 봉 시가 청산")
+            ok = trend is None or (trend[i - 1] is not None and cl[i - 1] > trend[i - 1])
+            if i > 0 and ok:
+                target = breakout_target(o[i], h[i - 1], lo[i - 1], params.k)
+                if h[i] >= target:
+                    buy(i, max(o[i], target))
+                    assert open_trade is not None
+                    stop_px = open_trade.entry_price * (1 - stop)
+                    if cl[i] <= stop_px:
+                        sell(i, stop_px, "손절")
         # 1) 직전 봉 신호를 이번 봉 시가에 체결
-        if i > 0:
+        elif i > trade_from:
             if sig[i - 1] == "buy" and open_trade is None:
                 buy(i, o[i])
             elif sig[i - 1] == "sell" and open_trade is not None:
                 sell(i, o[i], "신호 청산")
 
         # 2) 봉 안에서 손절·익절 (손절 우선)
-        if open_trade is not None:
+        if not breakout and open_trade is not None:
             stop_px = open_trade.entry_price * (1 - stop)
             take_px = open_trade.entry_price * (1 + take)
             if lo[i] <= stop_px:
@@ -146,7 +165,76 @@ def run_backtest(candles: list[Candle], params: ShortTermParams, costs: Backtest
         trade_count=len(trades),
         win_rate_pct=wins / len(trades) * 100 if trades else 0.0,
         fees_krw=fees,
-        exposure_pct=in_market_bars / len(candles) * 100,
+        exposure_pct=in_market_bars / len(equity) * 100,
         trades=trades,
         equity=equity,
     )
+
+
+# ---- 자동 최적화 ----
+
+GRID = {
+    "fast": [5, 9, 12, 20],
+    "slow": [20, 26, 50, 100],
+    "trend_period": [None, 100, 200],
+    "stop_loss_pct": [2, 3, 5],
+    "take_profit_pct": [4, 6, 10],
+}
+BREAKOUT_GRID = {
+    "k": ["0.3", "0.4", "0.5", "0.6", "0.7", "0.8"],
+    "trend_period": [None, 3, 5, 10, 20],
+    "stop_loss_pct": [2, 3, 5, 50],  # 50%는 사실상 손절 없음
+}
+
+
+def candidates(strategy: str) -> list[ShortTermParams]:
+    if strategy == "breakout":
+        g = BREAKOUT_GRID
+        return [
+            ShortTermParams(strategy="breakout", k=k, trend_period=trend, stop_loss_pct=stop)
+            for k in g["k"] for trend in g["trend_period"] for stop in g["stop_loss_pct"]
+        ]
+    g = GRID
+    return [
+        ShortTermParams(fast=fast, slow=slow, trend_period=trend, stop_loss_pct=stop, take_profit_pct=take)
+        for fast in g["fast"] for slow in g["slow"] if fast < slow
+        for trend in g["trend_period"] for stop in g["stop_loss_pct"] for take in g["take_profit_pct"]
+    ]
+MIN_TRADES = 3  # 앞 기간에 이보다 적게 거래한 설정은 우연일 수 있어 뺀다
+
+
+def optimize(
+    candles: list[Candle], costs: BacktestCosts, strategy: str = "ma_cross", train_ratio: float = 0.7, top: int = 5
+) -> dict:
+    """여러 설정을 앞 기간(학습)에서 돌려 고르고, 고른 설정을 뒤 기간(검증)에서 다시 돌린다.
+
+    검증 기간 성과는 고를 때 쓰지 않은 데이터라서, 과거에만 맞춘 설정인지 가려낼 수 있다.
+    """
+    split = int(len(candles) * train_ratio)
+    train = candles[:split]
+    results = []
+    for p in candidates(strategy):
+        if len(train) < p.warmup + 50:
+            continue
+        r = run_backtest(train, p, costs)
+        if r.trade_count >= MIN_TRADES:
+            results.append((p, r))
+    if not results:
+        raise ValueError("최적화할 데이터가 모자랍니다. 기간(봉 개수)을 늘려 주세요.")
+    results.sort(key=lambda x: x[1].return_pct, reverse=True)
+
+    def summary(r: BacktestResult) -> dict:
+        return {k: getattr(r, k) for k in (
+            "return_pct", "buy_hold_pct", "max_drawdown_pct", "trade_count", "win_rate_pct", "fees_krw")}
+
+    picks = []
+    for p, r in results[:top]:
+        test = run_backtest(candles, p, costs, trade_from=split)
+        picks.append({"params": p, "train": summary(r), "test": summary(test)})
+    return {
+        "tested": len(results),
+        "train_from": candles[0].time_kst,
+        "test_from": candles[split].time_kst,
+        "to": candles[-1].time_kst,
+        "picks": picks,
+    }

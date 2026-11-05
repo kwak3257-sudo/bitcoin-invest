@@ -5,22 +5,27 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import config
-from .backtest import BacktestCosts, run_backtest
+from . import config, notify
+from .confirm import ConfirmGate
+from .backtest import BacktestCosts, optimize, run_backtest
 from .exchanges.base import ExchangeError
 from .exchanges.bithumb import CANDLE_PATHS, BithumbExchange
-from .store import DcaStore
+from .store import DcaStore, TraderStore
 from .strategies.dca import KST, WeeklyDcaConfig, next_run, position_from_runs, take_profit_price
 from .strategies.short_term import ShortTermParams
+from .strategies.short_term import ShortTermParams
+from .strategies.trader import TraderConfig, daily_loss_limit_krw, held_market, position_value, today_pnl
 
 DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 
@@ -29,6 +34,8 @@ DEFAULT_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
 async def lifespan(app: FastAPI):
     app.state.exchange = BithumbExchange(config.BITHUMB_ACCESS_KEY, config.BITHUMB_SECRET_KEY)
     app.state.dca_store = DcaStore(config.DATA_DIR / "dca.json")
+    app.state.trader_store = TraderStore(config.DATA_DIR / "trader.json")
+    app.state.confirm = ConfirmGate()
     yield
     await app.state.exchange.close()
 
@@ -71,6 +78,11 @@ async def candles(market: str = "KRW-BTC", interval: str = "1d", count: int = Qu
     return await app.state.exchange.candles(market, interval, count)
 
 
+def _needs_code(new, old) -> bool:
+    """실거래로 켜져 있는 상태에서 설정이 바뀌면 인증이 필요하다. 끄는 것은 언제나 바로 된다."""
+    return new.mode == "live" and new.enabled and new != old
+
+
 def _dca_view(state) -> dict:
     cfg = state.config
     return {
@@ -89,11 +101,16 @@ def get_dca():
 
 
 @app.put("/api/strategies/dca")
-def put_dca(cfg: WeeklyDcaConfig):
+async def put_dca(cfg: WeeklyDcaConfig, code: str | None = None):
     if cfg.mode == "live" and not (config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY):
         raise HTTPException(400, "실거래 모드는 빗썸 API 키를 등록한 뒤에 켤 수 있습니다.")
+    if _needs_code(cfg, app.state.dca_store.load().config):
+        await app.state.confirm.require("dca", f"정기 매수 실거래 설정 저장 ({cfg.describe()})",
+                                        cfg.model_dump_json(), code)
     with app.state.dca_store.edit() as state:
         state.config = cfg
+    await notify.send(f"정기 매수 설정이 저장됐습니다: {'켜짐' if cfg.enabled else '꺼짐'}, "
+                      f"{'실거래' if cfg.mode == 'live' else '모의투자'}, {cfg.describe()}")
     return _dca_view(state)
 
 
@@ -170,3 +187,159 @@ async def backtest(req: BacktestRequest):
         **result.__dict__,
         "trades": [t.__dict__ for t in reversed(result.trades)],
     }
+
+
+class OptimizeRequest(BaseModel):
+    market: str = "KRW-BTC"
+    interval: str = "4h"
+    candles: int = Field(3000, ge=300, le=3000)
+    strategy: Literal["ma_cross", "breakout"] = "ma_cross"
+    costs: BacktestCosts = BacktestCosts()
+
+
+@app.post("/api/backtest/optimize")
+async def backtest_optimize(req: OptimizeRequest):
+    if req.interval not in CANDLE_PATHS:
+        raise HTTPException(400, f"interval은 {', '.join(CANDLE_PATHS)} 중 하나여야 합니다.")
+    candles = await app.state.exchange.candle_history(req.market, req.interval, req.candles)
+    try:
+        # 수백 번 계산하므로 다른 요청을 막지 않게 별도 스레드에서 돌린다
+        return await asyncio.to_thread(optimize, candles, req.costs, req.strategy)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class RecommendRequest(BaseModel):
+    market: str = "KRW-BTC"
+    costs: BacktestCosts = BacktestCosts()
+
+
+@app.post("/api/strategies/recommend")
+async def recommend(req: RecommendRequest):
+    """두 전략 × 4시간봉·일봉을 모두 최적화해서, 검증 기간 성과 순으로 보여 준다."""
+    rows = []
+    for interval in ("4h", "1d"):
+        candles = await app.state.exchange.candle_history(req.market, interval, 3000)
+        for strategy in ("ma_cross", "breakout"):
+            try:
+                out = await asyncio.to_thread(optimize, candles, req.costs, strategy)
+            except ValueError:
+                continue
+            for pick in out["picks"]:
+                rows.append({"interval": interval, "test_from": out["test_from"], **pick})
+    # 검증 기간 수익 순. 검증 기간에 거래가 없던 설정은 판단 근거가 없어 뒤로 보낸다
+    rows.sort(key=lambda r: (r["test"]["trade_count"] > 0, r["test"]["return_pct"]), reverse=True)
+    return {"market": req.market, "rows": rows}
+
+
+class ValidateRequest(BaseModel):
+    markets: list[str] = Field(min_length=1, max_length=10)
+    interval: Literal["4h", "1d"] = "1d"
+    params: ShortTermParams
+    costs: BacktestCosts = BacktestCosts()
+    train_ratio: float = Field(0.7, ge=0.5, le=0.9)
+
+
+@app.post("/api/strategies/validate")
+async def validate_markets(req: ValidateRequest):
+    """같은 설정을 코인마다 돌려 본다. 뒤 30%(검증 기간)에서 수수료를 빼고도 수익이 났는지가 기준이다."""
+    rows = []
+    for market in dict.fromkeys(req.markets):
+        try:
+            candles = await app.state.exchange.candle_history(market, req.interval, 3000)
+            split = int(len(candles) * req.train_ratio)
+            full = await asyncio.to_thread(run_backtest, candles, req.params, req.costs)
+            test = await asyncio.to_thread(run_backtest, candles, req.params, req.costs, split)
+        except (ExchangeError, ValueError) as exc:
+            rows.append({"market": market, "error": str(exc)})
+            continue
+        keys = ("return_pct", "buy_hold_pct", "max_drawdown_pct", "trade_count", "win_rate_pct", "fees_krw")
+        rows.append({
+            "market": market,
+            "from": candles[0].time_kst,
+            "test_from": candles[split].time_kst,
+            "full": {k: getattr(full, k) for k in keys},
+            "test": {k: getattr(test, k) for k in keys},
+            "passed": test.return_pct > 0 and full.return_pct > 0,
+        })
+    return {"rows": rows}
+
+
+async def _trader_view(state) -> dict:
+    cfg = state.config
+    price = None
+    try:
+        [ticker] = await app.state.exchange.tickers([held_market(state)])
+        price = ticker.price
+    except ExchangeError:
+        pass  # 시세를 못 받아도 설정과 기록은 보여 준다
+    now = datetime.now(KST)
+    value = position_value(state, price) if price is not None else None
+    equity = state.cash_krw + (value or Decimal(0))
+    # 기록 순서대로 누적 확정 손익
+    curve, total = [], Decimal(0)
+    for t in state.trades:
+        if t.ok and t.pnl_krw is not None:
+            total += t.pnl_krw
+            curve.append({"at": t.at, "pnl": total})
+    sells = [t for t in state.trades if t.ok and t.pnl_krw is not None]
+    return {
+        "config": cfg,
+        "held_market": held_market(state),
+        "keys_ready": bool(config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY),
+        "telegram_ready": notify.enabled(),
+        "price": price,
+        "position": state.position,
+        "position_value_krw": value,
+        "cash_krw": state.cash_krw,
+        "equity_krw": equity,
+        "realized_pnl_krw": state.realized_pnl,
+        "total_pnl_krw": equity - cfg.budget_krw,
+        "return_pct": (equity / cfg.budget_krw - 1) * 100,
+        "today_pnl_krw": today_pnl(state, price, now),
+        "daily_loss_limit_krw": daily_loss_limit_krw(cfg),
+        "fees_krw": state.fees_krw,
+        "trade_count": len(sells),
+        "win_rate_pct": sum(1 for t in sells if t.pnl_krw > 0) / len(sells) * 100 if sells else 0,
+        "halted_until": state.halted_until,
+        "halt_reason": state.halt_reason,
+        "stop_requested": state.stop_requested,
+        "curve": curve,
+        "trades": list(reversed(state.trades[-100:])),
+    }
+
+
+@app.get("/api/strategies/trader")
+async def get_trader():
+    return await _trader_view(app.state.trader_store.load())
+
+
+@app.put("/api/strategies/trader")
+async def put_trader(cfg: TraderConfig, code: str | None = None):
+    if cfg.mode == "live" and not (config.BITHUMB_ACCESS_KEY and config.BITHUMB_SECRET_KEY):
+        raise HTTPException(400, "실거래 모드는 빗썸 API 키를 등록한 뒤에 켤 수 있습니다.")
+    if _needs_code(cfg, app.state.trader_store.load().config):
+        await app.state.confirm.require(
+            "trader", f"단기 매매 실거래 설정 저장 ({cfg.market}, 운용 금액 {cfg.budget_krw:,.0f}원)",
+            cfg.model_dump_json(), code,
+        )
+    with app.state.trader_store.edit() as state:
+        if state.position is not None and (cfg.market != state.config.market or cfg.mode != state.config.mode):
+            raise HTTPException(400, "보유 중에는 코인이나 모드를 바꿀 수 없습니다. 긴급 정지로 먼저 정리하세요.")
+        if cfg.enabled and not state.config.enabled:
+            state.halted_until = state.halt_reason = None
+        state.config = cfg
+    await notify.send(f"단기 매매 설정이 저장됐습니다: {'켜짐' if cfg.enabled else '꺼짐'}, "
+                      f"{'실거래' if cfg.mode == 'live' else '모의투자'}, {cfg.market}, 운용 금액 {cfg.budget_krw:,.0f}원")
+    return await _trader_view(state)
+
+
+@app.post("/api/strategies/trader/stop")
+async def stop_trader():
+    """긴급 정지: 엔진이 다음 확인 때(최대 수십 초) 보유분을 시장가로 팔고 전략을 끈다."""
+    with app.state.trader_store.edit() as state:
+        if state.position is None:
+            state.config = state.config.model_copy(update={"enabled": False})
+        else:
+            state.stop_requested = True
+    return await _trader_view(state)

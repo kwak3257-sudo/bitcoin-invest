@@ -94,6 +94,9 @@ export interface BacktestParams {
   rsi_max: number
   stop_loss_pct: number
   take_profit_pct: number
+  trend_period: number | null
+  strategy: 'ma_cross' | 'breakout'
+  k: number
 }
 
 export interface BacktestRequest {
@@ -134,6 +137,112 @@ export interface BacktestResult {
   equity: { time: string; equity: number; buy_hold: number }[]
 }
 
+export interface TraderConfig {
+  enabled: boolean
+  mode: 'paper' | 'live'
+  market: string
+  watch: string[]
+  interval: '15m' | '30m' | '1h' | '4h' | '1d'
+  params: {
+    fast: number
+    slow: number
+    rsi_period: number
+    rsi_max: string
+    stop_loss_pct: string
+    take_profit_pct: string
+    trend_period: number | null
+    strategy: 'ma_cross' | 'breakout'
+    k: string
+  }
+  budget_krw: string
+  daily_loss_limit_pct: string
+  fee_rate: string
+}
+
+export interface TraderTrade {
+  at: string
+  market: string
+  side: 'buy' | 'sell'
+  mode: 'paper' | 'live'
+  reason: string
+  price: string | null
+  volume: string
+  krw_amount: string
+  fee_krw: string
+  pnl_krw: string | null
+  ok: boolean
+  message: string
+}
+
+export interface TraderView {
+  config: TraderConfig
+  held_market: string
+  keys_ready: boolean
+  telegram_ready: boolean
+  price: string | null
+  position: { entry_at: string; entry_price: string; volume: string; cost_krw: string } | null
+  position_value_krw: string | null
+  cash_krw: string
+  equity_krw: string
+  realized_pnl_krw: string
+  total_pnl_krw: string
+  return_pct: string
+  today_pnl_krw: string
+  daily_loss_limit_krw: string
+  fees_krw: string
+  trade_count: number
+  win_rate_pct: number
+  halted_until: string | null
+  halt_reason: string | null
+  stop_requested: boolean
+  curve: { at: string; pnl: string }[]
+  trades: TraderTrade[]
+}
+
+export interface OptimizeSummary {
+  return_pct: number
+  buy_hold_pct: number
+  max_drawdown_pct: number
+  trade_count: number
+  win_rate_pct: number
+  fees_krw: number
+}
+
+export interface OptimizeResult {
+  tested: number
+  train_from: string
+  test_from: string
+  to: string
+  picks: { params: BacktestParams; train: OptimizeSummary; test: OptimizeSummary }[]
+}
+
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+export interface RecommendRow {
+  interval: '4h' | '1d'
+  test_from: string
+  params: BacktestParams
+  train: OptimizeSummary
+  test: OptimizeSummary
+}
+
+export interface ValidateRow {
+  market: string
+  error?: string
+  from?: string
+  test_from?: string
+  full?: OptimizeSummary
+  test?: OptimizeSummary
+  passed?: boolean
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -144,22 +253,61 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = body?.detail
     const message = Array.isArray(detail)
       ? detail.map((d: { msg: string }) => d.msg.replace(/^Value error, /, '')).join(' ')
-      : detail ?? `요청 실패 (${res.status})`
-    throw new Error(message)
+      : (detail ?? `요청 실패 (${res.status})`)
+    throw new ApiError(message, res.status)
   }
   return res.json()
 }
 
+const codeQuery = (code?: string) => (code ? `?code=${encodeURIComponent(code)}` : '')
+
+// 실거래 설정은 텔레그램 인증번호가 필요하다(428). 번호를 물어 다시 보낸다
+export async function withTelegramCode<T>(send: (code?: string) => Promise<T>): Promise<T> {
+  let ask: string
+  try {
+    return await send()
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 428) throw e
+    ask = e.message
+  }
+  for (;;) {
+    const code = window.prompt(`${ask}\n(텔레그램에서 방금 받은 번호)`)
+    if (!code) throw new Error('인증을 취소했습니다. 설정은 저장되지 않았어요.')
+    try {
+      return await send(code)
+    } catch (e) {
+      // 번호가 틀리면 다시 묻는다. 너무 많이 틀리거나 다른 오류면 그대로 알린다
+      if (!(e instanceof ApiError) || e.status !== 403 || !e.message.includes('맞지 않')) throw e
+      ask = e.message
+    }
+  }
+}
+
 export const api = {
   markets: () => request<Market[]>('/api/markets'),
-  tickers: (markets: string[]) =>
-    request<Ticker[]>(`/api/tickers?markets=${encodeURIComponent(markets.join(','))}`),
+  tickers: (markets: string[]) => request<Ticker[]>(`/api/tickers?markets=${encodeURIComponent(markets.join(','))}`),
   candles: (market: string, interval: string) =>
     request<Candle[]>(`/api/candles?market=${market}&interval=${interval}&count=200`),
   backtest: (req: BacktestRequest) =>
     request<BacktestResult>('/api/backtest', { method: 'POST', body: JSON.stringify(req) }),
+  optimize: (req: Omit<BacktestRequest, 'params'> & { strategy: BacktestParams['strategy'] }) =>
+    request<OptimizeResult>('/api/backtest/optimize', { method: 'POST', body: JSON.stringify(req) }),
+  recommend: (market: string, fee_rate: string) =>
+    request<{ market: string; rows: RecommendRow[] }>('/api/strategies/recommend', {
+      method: 'POST',
+      body: JSON.stringify({ market, costs: { fee_rate } }),
+    }),
   analysis: () => request<Analysis>('/api/analysis'),
+  getTrader: () => request<TraderView>('/api/strategies/trader'),
+  validate: (markets: string[], interval: string, params: TraderConfig['params'], fee_rate: string) =>
+    request<{ rows: ValidateRow[] }>('/api/strategies/validate', {
+      method: 'POST',
+      body: JSON.stringify({ markets, interval, params, costs: { fee_rate } }),
+    }),
+  putTrader: (cfg: TraderConfig, code?: string) =>
+    request<TraderView>(`/api/strategies/trader${codeQuery(code)}`, { method: 'PUT', body: JSON.stringify(cfg) }),
+  stopTrader: () => request<TraderView>('/api/strategies/trader/stop', { method: 'POST' }),
   getDca: () => request<DcaView>('/api/strategies/dca'),
-  putDca: (cfg: DcaConfig) =>
-    request<DcaView>('/api/strategies/dca', { method: 'PUT', body: JSON.stringify(cfg) }),
+  putDca: (cfg: DcaConfig, code?: string) =>
+    request<DcaView>(`/api/strategies/dca${codeQuery(code)}`, { method: 'PUT', body: JSON.stringify(cfg) }),
 }

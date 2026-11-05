@@ -31,3 +31,6 @@ BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY") or None
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY") or None
 # 엔진이 예정 시각을 확인하는 주기(초)
 ENGINE_TICK_SECONDS = int(os.getenv("ENGINE_TICK_SECONDS", "30"))
+# 텔레그램 알림 (선택). 둘 다 있어야 보낸다
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or None
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or None

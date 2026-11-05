@@ -6,6 +6,8 @@ if not exist backend\.venv (
   pause
   exit /b 1
 )
+rem 이미 켜져 있으면 끄고 다시 켠다
+call stop.bat > nul
 echo API 서버, 매매 엔진, 화면을 각각 새 창에서 켭니다. 창을 닫으면 해당 프로그램이 멈춥니다.
 start "API 서버" cmd /k "cd /d %~dp0backend && .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 start "매매 엔진" cmd /k "cd /d %~dp0backend && .venv\Scripts\python -m app.engine"

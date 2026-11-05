@@ -5,12 +5,13 @@ import { Backtest } from './components/Backtest'
 import { DcaSettings } from './components/DcaSettings'
 import { PriceChart } from './components/PriceChart'
 import { TickerTable } from './components/TickerTable'
+import { Trader } from './components/Trader'
 import { formatKrw, formatRate, trendClass } from './format'
 
 const WATCHLIST = ['KRW-BTC', 'KRW-ETH', 'KRW-XRP', 'KRW-SOL', 'KRW-DOGE']
 const REFRESH_MS = 3000
 
-type Page = 'dashboard' | 'analysis' | 'backtest' | 'auto'
+type Page = 'dashboard' | 'trader' | 'analysis' | 'backtest' | 'auto'
 
 export default function App() {
   const [page, setPage] = useState<Page>('dashboard')
@@ -54,14 +55,17 @@ export default function App() {
         <button className={page === 'dashboard' ? 'active' : undefined} onClick={() => setPage('dashboard')}>
           대시보드
         </button>
+        <button className={page === 'trader' ? 'active' : undefined} onClick={() => setPage('trader')}>
+          단기 매매
+        </button>
         <button className={page === 'analysis' ? 'active' : undefined} onClick={() => setPage('analysis')}>
-          수익 분석
+          정기 매수 수익
         </button>
         <button className={page === 'backtest' ? 'active' : undefined} onClick={() => setPage('backtest')}>
           백테스트
         </button>
         <button className={page === 'auto' ? 'active' : undefined} onClick={() => setPage('auto')}>
-          자동매매
+          정기 매수 설정
         </button>
         <div className="exchange-tag">연결 거래소: 빗썸</div>
       </nav>
@@ -98,6 +102,7 @@ export default function App() {
           </>
         )}
 
+        {page === 'trader' && <Trader markets={markets} />}
         {page === 'analysis' && <Analysis />}
         {page === 'backtest' && <Backtest markets={markets} />}
         {page === 'auto' && <DcaSettings markets={markets} />}

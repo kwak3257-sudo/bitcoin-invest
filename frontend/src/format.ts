@@ -1,4 +1,5 @@
 // 원화, 등락률, KST 시간 표기
+import type { BacktestParams } from './api'
 
 const krw = new Intl.NumberFormat('ko-KR')
 
@@ -35,4 +36,11 @@ export function formatKst(iso: string): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+export function describeParams(p: BacktestParams) {
+  const trend = p.trend_period ? ` · 추세 ${p.trend_period}` : ''
+  const stop = Number(p.stop_loss_pct) >= 50 ? '손절 없음' : `손절 ${Number(p.stop_loss_pct)}%`
+  if (p.strategy === 'breakout') return `돌파 k ${Number(p.k)}${trend} · ${stop}`
+  return `${p.fast}/${p.slow}봉${trend} · ${stop} · 익절 ${Number(p.take_profit_pct)}%`
 }
